@@ -1,7 +1,8 @@
 name: Portail locataire
-description: Prototype en lecture seule, accessible par Ingress
-version: "0.1.0"
+description: Prototype administrateur et préparation de l'accès HTTPS local
+version: "0.1.1"
 slug: portail_locataire
+
 arch:
   - aarch64
   - amd64
@@ -16,6 +17,15 @@ panel_icon: mdi:home-account
 panel_title: Portail test
 
 homeassistant_api: true
+
+map:
+  - ssl:ro
+
+ports:
+  8443/tcp: 8443
+
+ports_description:
+  8443/tcp: Portail HTTPS local — page de préparation uniquement
 
 options: {}
 schema: {}
