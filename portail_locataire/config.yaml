@@ -1,6 +1,6 @@
 name: Portail locataire
-description: Prototype administrateur et préparation de l'accès HTTPS local
-version: "0.1.1"
+description: Portail HTTPS avec connexion et expiration du séjour
+version: "0.2.0"
 slug: portail_locataire
 
 arch:
@@ -25,7 +25,14 @@ ports:
   8443/tcp: 8443
 
 ports_description:
-  8443/tcp: Portail HTTPS local — page de préparation uniquement
+  8443/tcp: Portail HTTPS avec authentification locataire
 
-options: {}
-schema: {}
+options:
+  portal_url: ""
+  guest_code: ""
+  expires_at: ""
+
+schema:
+  portal_url: str
+  guest_code: password
+  expires_at: str
