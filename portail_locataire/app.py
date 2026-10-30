@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import html
 import json
+import math
 import os
 import secrets
 import ssl
@@ -12,37 +13,38 @@ from collections import deque
 from datetime import datetime
 from urllib.parse import urlsplit
 
-import aiohttp
 from aiohttp import web
 
 
-ENTITY = "sensor.hinojo_45_temperature_exterieure"
-API_URL = f"http://supervisor/core/api/states/{ENTITY}"
-
 INGRESS_IP = "172.30.32.2"
+
 CERT_FILE = "/ssl/portail_fullchain.pem"
 KEY_FILE = "/ssl/portail_privkey.pem"
 
 COOKIE_NAME = "__Host-portail-session"
-SESSION_SECONDS = 8 * 60 * 60
 
-# Limitation globale : 20 essais de connexion par période de 10 minutes.
-LOGIN_WINDOW = 600
+SESSION_SECONDS = 8 * 60 * 60
+FORM_SECONDS = 10 * 60
+
+MAX_SESSIONS = 64
+MAX_PENDING = 128
+
+LOGIN_WINDOW = 10 * 60
 LOGIN_LIMIT = 20
 
+# Mémoire uniquement : un redémarrage invalide tout.
 sessions = {}
+pending = {}
 attempts = deque()
 
 
-def load_settings():
-    with open("/data/options.json", encoding="utf-8") as file:
-        options = json.load(file)
+# ---------- Configuration ----------
 
-    address = options.get("portal_url", "").strip().rstrip("/")
-    code = options.get("guest_code", "")
-    expiry = options.get("expires_at", "").strip()
+def normalize_origin(value):
+    if not isinstance(value, str):
+        raise ValueError("Adresse HTTPS invalide.")
 
-    parsed = urlsplit(address)
+    parsed = urlsplit(value)
 
     if (
         parsed.scheme != "https"
@@ -53,103 +55,97 @@ def load_settings():
         or parsed.query
         or parsed.fragment
     ):
-        raise ValueError(
-            "portal_url doit être une adresse HTTPS sans chemin."
-        )
+        raise ValueError("Adresse HTTPS sans chemin requise.")
 
-    # Vérifie également que le port est valide.
-    parsed.port
+    port = parsed.port
+    if port is None:
+        port = 443
+
+    if not 1 <= port <= 65535:
+        raise ValueError("Port HTTPS invalide.")
+
+    return ("https", parsed.hostname.lower(), port)
+
+
+def load_settings():
+    with open("/data/options.json", encoding="utf-8") as file:
+        options = json.load(file)
+
+    address = options.get("portal_url", "")
+    code = options.get("guest_code", "")
+    expiry = options.get("expires_at", "")
+
+    if not isinstance(address, str) or not isinstance(expiry, str):
+        raise ValueError("portal_url et expires_at doivent être du texte.")
+
+    address = address.strip().rstrip("/")
+    origin = normalize_origin(address)
 
     if not isinstance(code, str) or not 16 <= len(code) <= 128:
         raise ValueError(
             "guest_code doit contenir entre 16 et 128 caractères."
         )
 
-    end = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+    end = datetime.fromisoformat(
+        expiry.strip().replace("Z", "+00:00")
+    )
 
     if end.tzinfo is None or end.utcoffset() is None:
         raise ValueError(
-            "expires_at doit contenir un fuseau, par exemple +02:00."
+            "expires_at doit inclure un fuseau, par exemple +02:00."
         )
 
     return {
-        "origin": address,
-        "code_hash": hashlib.sha256(code.encode()).digest(),
+        "address": address,
+        "origin": origin,
+        "code_hash": hashlib.sha256(code.encode("utf-8")).digest(),
         "expires": end.timestamp(),
     }
 
 
+# ---------- Réponses et cookies ----------
+
 def page(title, content, status=200):
-    document = """<!doctype html>
+    document = f"""<!doctype html>
 <html lang="fr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mon séjour</title>
+  <title>Portail du séjour</title>
   <style>
-    body {
+    body {{
       margin: 0;
       padding: 28px 18px;
       background: #10252b;
       color: white;
       font-family: system-ui, sans-serif;
-    }
-    main {
+    }}
+    main {{
       max-width: 460px;
       margin: auto;
-    }
-    .card {
       padding: 24px;
       background: #1b3942;
       border-radius: 18px;
-      margin-bottom: 20px;
-    }
-    h1, h2, .temperature {
-      text-align: center;
-    }
-    p {
-      line-height: 1.5;
-    }
-    input, button {
+    }}
+    input, button {{
       box-sizing: border-box;
       width: 100%;
       padding: 14px;
       margin-top: 12px;
-      border-radius: 10px;
       font-size: 17px;
-    }
-    input {
-      border: 1px solid #8aa8b0;
-    }
-    button {
-      border: 0;
-      cursor: pointer;
-      background: #bdd9c1;
-      color: #10252b;
-    }
-    .temperature {
-      font-size: 40px;
-      font-weight: bold;
-    }
-    .note {
-      color: #d0e0e5;
-    }
+    }}
+    a {{ color: #bdd9c1; }}
+    p {{ line-height: 1.5; }}
   </style>
 </head>
 <body>
   <main>
-    <h1>Mon séjour</h1>
-    <section class="card">
-      <h2>__TITLE__</h2>
-      __CONTENT__
-    </section>
+    <h1>{html.escape(title)}</h1>
+    {content}
   </main>
 </body>
 </html>
 """
-    document = document.replace("__TITLE__", html.escape(title))
-    document = document.replace("__CONTENT__", content)
-
     return web.Response(
         text=document,
         content_type="text/html",
@@ -159,6 +155,18 @@ def page(title, content, status=200):
 
 def redirect_home():
     return web.Response(status=303, headers={"Location": "/"})
+
+
+def set_cookie(response, token, seconds):
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        max_age=max(1, int(seconds)),
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="Strict",
+    )
 
 
 def clear_cookie(response):
@@ -171,37 +179,9 @@ def clear_cookie(response):
     )
 
 
-def clean_sessions():
-    now = time.time()
-    expired = [
-        token
-        for token, session in sessions.items()
-        if session["expires"] <= now
-    ]
-
-    for token in expired:
-        sessions.pop(token, None)
-
-
-def get_session(request):
-    clean_sessions()
-
-    if time.time() >= request.app["settings"]["expires"]:
-        return None
-
-    token = request.cookies.get(COOKIE_NAME, "")
-    return sessions.get(token)
-
-
-def origin_allowed(request):
-    return (
-        request.headers.get("Origin", "")
-        == request.app["settings"]["origin"]
-    )
-
-
 async def security_headers(request, response):
-    response.headers["Cache-Control"] = "no-store"
+    response.headers["Cache-Control"] = "no-store, private"
+    response.headers["Pragma"] = "no-cache"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
 
@@ -216,230 +196,359 @@ async def security_headers(request, response):
         )
 
 
-async def read_temperature(client):
-    token = os.environ.get("SUPERVISOR_TOKEN")
+# ---------- Sessions et expiration ----------
 
-    if not token:
-        return "Connexion HA non configurée", ""
+def stay_expired(request):
+    return time.time() >= request.app["settings"]["expires"]
 
-    try:
-        async with client.get(
-            API_URL,
-            headers={"Authorization": f"Bearer {token}"},
-        ) as response:
-            if response.status != 200:
-                return "Lecture indisponible", ""
 
-            data = await response.json()
+def clean_sessions():
+    now = time.monotonic()
 
-        state = data.get("state", "unknown")
-        unit = data.get("attributes", {}).get(
-            "unit_of_measurement", ""
+    for store in (sessions, pending):
+        expired = [
+            token
+            for token, item in store.items()
+            if item["deadline"] <= now
+        ]
+        for token in expired:
+            store.pop(token, None)
+
+
+def invalidate_browser(request):
+    token = request.cookies.get(COOKIE_NAME, "")
+    sessions.pop(token, None)
+    pending.pop(token, None)
+
+
+def get_session(request):
+    clean_sessions()
+
+    if stay_expired(request):
+        return None
+
+    return sessions.get(request.cookies.get(COOKIE_NAME, ""))
+
+
+def expired_response(request):
+    sessions.clear()
+    pending.clear()
+
+    if request.path.startswith("/api/"):
+        response = web.json_response(
+            {"error": "stay_expired"},
+            status=403,
         )
-
-        if state in ("unknown", "unavailable"):
-            return "Capteur indisponible", ""
-
-        return str(state), str(unit)
-
-    except (
-        aiohttp.ClientError,
-        asyncio.TimeoutError,
-        ValueError,
-        AttributeError,
-    ):
-        return "Connexion indisponible", ""
-
-
-async def home(request):
-    settings = request.app["settings"]
-
-    if time.time() >= settings["expires"]:
+    else:
         response = page(
             "Accès terminé",
             "<p>L’accès à ce séjour a expiré.</p>",
             status=403,
         )
-        clear_cookie(response)
-        return response
 
-    session = get_session(request)
+    clear_cookie(response)
+    return response
 
-    if session is None:
+
+# ---------- Adresse publique et protection CSRF ----------
+
+def origin_header_allowed(request):
+    value = request.headers.get("Origin")
+
+    # L'absence d'Origin n'est pas une autorisation :
+    # les POST doivent aussi présenter un jeton CSRF valide.
+    if value is None:
+        return True
+
+    try:
+        return (
+            normalize_origin(value)
+            == request.app["settings"]["origin"]
+        )
+    except ValueError:
+        return False
+
+
+def valid_csrf(form, item):
+    supplied = form.get("csrf", "")
+
+    return (
+        item is not None
+        and isinstance(supplied, str)
+        and hmac.compare_digest(
+            supplied.encode("utf-8"),
+            item["csrf"].encode("utf-8"),
+        )
+    )
+
+
+def invalid_form_response():
+    return page(
+        "Formulaire périmé",
+        '<p>Rechargez la page puis réessayez.</p>'
+        '<p><a href="/">Retour au portail</a></p>',
+        status=403,
+    )
+
+
+@web.middleware
+async def public_security(request, handler):
+    # Ce serveur utilise directement TLS.
+    # Les en-têtes X-Forwarded-* ne sont pas utilisés.
+    if not request.secure:
         return page(
-            "Bienvenue",
-            """
-            <p>Saisissez le code du portail fourni pour votre séjour.</p>
-            <form method="post" action="/login">
-              <label for="code">Code du séjour</label>
-              <input
-                id="code"
-                name="code"
-                type="password"
-                autocomplete="current-password"
-                minlength="16"
-                maxlength="128"
-                required
-              >
-              <button type="submit">Se connecter</button>
+            "HTTPS requis",
+            "<p>Utilisez l’adresse HTTPS du portail.</p>",
+            status=400,
+        )
+
+    settings = request.app["settings"]
+
+    try:
+        actual_origin = normalize_origin(
+            "https://" + request.host
+        )
+    except ValueError:
+        actual_origin = None
+
+    if actual_origin != settings["origin"]:
+        address = html.escape(settings["address"])
+        return page(
+            "Adresse du portail incorrecte",
+            f"<p>Adresse attendue : <code>{address}</code></p>"
+            "<p>Vérifiez le nom de domaine et le port.</p>",
+            status=400,
+        )
+
+    if stay_expired(request):
+        return expired_response(request)
+
+    if (
+        request.method not in ("GET", "HEAD", "OPTIONS")
+        and not origin_header_allowed(request)
+    ):
+        return page(
+            "Requête refusée",
+            "<p>L’origine de cette requête ne correspond pas "
+            "à l’adresse configurée du portail.</p>",
+            status=403,
+        )
+
+    response = await handler(request)
+
+    # L'expiration peut survenir pendant la lecture d'un formulaire.
+    if stay_expired(request):
+        return expired_response(request)
+
+    return response
+
+
+# ---------- Pages publiques ----------
+
+async def home(request):
+    item = get_session(request)
+
+    if item is not None:
+        csrf = html.escape(item["csrf"], quote=True)
+
+        return page(
+            "Connexion autorisée",
+            f"""
+            <p>Votre session est active.</p>
+            <p>Aucun thermostat ni capteur n’est connecté
+            dans cette version de test.</p>
+            <form method="post" action="/logout">
+              <input type="hidden" name="csrf" value="{csrf}">
+              <button type="submit">Se déconnecter</button>
             </form>
             """,
         )
 
-    value, unit = await read_temperature(request.app["client"])
-    csrf = html.escape(session["csrf"], quote=True)
+    clean_sessions()
 
-    return page(
-        "Température extérieure",
+    old_token = request.cookies.get(COOKIE_NAME, "")
+    item = pending.get(old_token)
+
+    if item is None:
+        # Les formulaires anonymes ne peuvent pas évincer
+        # les sessions déjà authentifiées.
+        if len(pending) >= MAX_PENDING:
+            pending.pop(next(iter(pending)))
+
+        token = secrets.token_urlsafe(32)
+        item = {
+            "csrf": secrets.token_urlsafe(32),
+            "deadline": time.monotonic() + FORM_SECONDS,
+        }
+        pending[token] = item
+    else:
+        token = old_token
+
+    csrf = html.escape(item["csrf"], quote=True)
+
+    response = page(
+        "Bienvenue",
         f"""
-        <p class="temperature">
-          {html.escape(value)} {html.escape(unit)}
-        </p>
-        <form method="get" action="/">
-          <button type="submit">Actualiser</button>
-        </form>
-        <form method="post" action="/logout">
+        <p>Saisissez le code fourni pour votre séjour.</p>
+        <form method="post" action="/login">
           <input type="hidden" name="csrf" value="{csrf}">
-          <button type="submit">Se déconnecter</button>
+          <label for="code">Code du séjour</label>
+          <input
+            id="code"
+            name="code"
+            type="password"
+            autocomplete="current-password"
+            maxlength="128"
+            required
+          >
+          <button type="submit">Se connecter</button>
         </form>
-        <p class="note">
-          Version de test : aucune commande sur les équipements.
-        </p>
         """,
     )
 
+    set_cookie(
+        response,
+        token,
+        item["deadline"] - time.monotonic(),
+    )
+    return response
+
 
 async def login(request):
-    settings = request.app["settings"]
-
-    if not origin_allowed(request):
-        return page(
-            "Connexion refusée",
-            "<p>Ouvrez le portail avec son adresse HTTPS configurée.</p>",
-            status=403,
-        )
-
-    if time.time() >= settings["expires"]:
-        return page(
-            "Accès terminé",
-            "<p>L’accès à ce séjour a expiré.</p>",
-            status=403,
-        )
-
+    # Limite globale : elle évite de dépendre d'en-têtes IP
+    # éventuellement falsifiés.
     now = time.monotonic()
 
     while attempts and attempts[0] <= now - LOGIN_WINDOW:
         attempts.popleft()
 
     if len(attempts) >= LOGIN_LIMIT:
+        wait = max(
+            1,
+            math.ceil(attempts[0] + LOGIN_WINDOW - now),
+        )
         response = page(
             "Veuillez patienter",
-            "<p>Trop de tentatives. Réessayez dans dix minutes.</p>",
+            f"<p>Trop de tentatives. Réessayez dans "
+            f"{wait} secondes.</p>",
             status=429,
         )
-        response.headers["Retry-After"] = "600"
+        response.headers["Retry-After"] = str(wait)
         return response
 
     attempts.append(now)
 
     form = await request.post()
-    supplied = form.get("code", "")
 
-    if not isinstance(supplied, str) or len(supplied) > 128:
-        supplied = ""
-
-    supplied_hash = hashlib.sha256(supplied.encode()).digest()
-
-    if not hmac.compare_digest(
-        supplied_hash,
-        settings["code_hash"],
-    ):
-        return page(
-            "Connexion refusée",
-            '<p>Code incorrect.</p><p><a href="/">Réessayer</a></p>',
-            status=401,
-        )
+    if stay_expired(request):
+        return expired_response(request)
 
     clean_sessions()
 
-    # Une nouvelle connexion remplace la session de ce navigateur.
     old_token = request.cookies.get(COOKIE_NAME, "")
-    sessions.pop(old_token, None)
+    item = pending.get(old_token)
 
-    # Limite la mémoire utilisée par les sessions.
-    if len(sessions) >= 64:
-        sessions.pop(next(iter(sessions)))
+    if not valid_csrf(form, item):
+        return invalid_form_response()
 
-    token = secrets.token_urlsafe(32)
-    expires = min(
-        time.time() + SESSION_SECONDS,
-        settings["expires"],
+    supplied = form.get("code", "")
+
+    if not isinstance(supplied, str) or not 16 <= len(supplied) <= 128:
+        supplied = ""
+
+    supplied_hash = hashlib.sha256(
+        supplied.encode("utf-8")
+    ).digest()
+
+    if not hmac.compare_digest(
+        supplied_hash,
+        request.app["settings"]["code_hash"],
+    ):
+        return page(
+            "Connexion refusée",
+            '<p>Code du séjour incorrect.</p>'
+            '<p><a href="/">Réessayer</a></p>',
+            status=401,
+        )
+
+    if len(sessions) >= MAX_SESSIONS:
+        return page(
+            "Portail temporairement indisponible",
+            "<p>Le nombre maximal de sessions est atteint.</p>",
+            status=503,
+        )
+
+    # Le formulaire de connexion est consommé.
+    # Le cookie anonyme n'est jamais réutilisé comme session autorisée.
+    invalidate_browser(request)
+
+    duration = min(
+        SESSION_SECONDS,
+        request.app["settings"]["expires"] - time.time(),
     )
 
+    if duration <= 0:
+        return expired_response(request)
+
+    token = secrets.token_urlsafe(32)
     sessions[token] = {
-        "expires": expires,
         "csrf": secrets.token_urlsafe(32),
+        "deadline": time.monotonic() + duration,
     }
 
     response = redirect_home()
-    response.set_cookie(
-        COOKIE_NAME,
-        token,
-        max_age=max(1, int(expires - time.time())),
-        path="/",
-        secure=True,
-        httponly=True,
-        samesite="Strict",
-    )
-
+    set_cookie(response, token, duration)
     return response
 
 
 async def logout(request):
-    if not origin_allowed(request):
-        return web.Response(status=403, text="Requête refusée")
+    form = await request.post()
 
-    session = get_session(request)
+    item = get_session(request)
 
-    if session is not None:
-        form = await request.post()
-        supplied = form.get("csrf", "")
+    if item is not None and not valid_csrf(form, item):
+        return invalid_form_response()
 
-        if (
-            not isinstance(supplied, str)
-            or not hmac.compare_digest(
-                supplied.encode(),
-                session["csrf"].encode(),
-            )
-        ):
-            return web.Response(status=403, text="Requête refusée")
-
-    token = request.cookies.get(COOKIE_NAME, "")
-    sessions.pop(token, None)
+    # Si la session a déjà disparu, la déconnexion est sans effet
+    # sur le serveur, mais nettoie tout de même le cookie.
+    invalidate_browser(request)
 
     response = redirect_home()
     clear_cookie(response)
     return response
 
 
+async def session_status(request):
+    if get_session(request) is None:
+        return web.json_response(
+            {"error": "authentication_required"},
+            status=401,
+        )
+
+    return web.json_response({"authenticated": True})
+
+
+# ---------- Ingress : état uniquement ----------
+
 async def admin_home(request):
     if request.remote != INGRESS_IP:
-        return web.Response(status=403, text="Accès Ingress uniquement")
-
-    value, unit = await read_temperature(request.app["client"])
+        return web.Response(
+            status=403,
+            text="Accès Ingress uniquement",
+        )
 
     return page(
-        "Administration — lecture seule",
-        f"""
-        <p>Le portail est démarré.</p>
-        <p class="temperature">
-          {html.escape(value)} {html.escape(unit)}
-        </p>
-        <p>La connexion locataire se teste avec l’adresse HTTPS
-        du portail, pas avec cette interface Ingress.</p>
-        """,
+        "Administration",
+        "<p>Le portail 0.3.0 est démarré.</p>"
+        "<p>Cette page ne connecte pas le locataire.</p>"
+        "<p>Pour les tests, ouvrez directement l’adresse HTTPS "
+        "configurée dans portal_url.</p>"
+        "<p>Aucun accès aux équipements Home Assistant "
+        "dans cette version.</p>",
     )
 
+
+# ---------- HTTPS et démarrage ----------
 
 async def watch_certificate(context):
     last_loaded = None
@@ -454,12 +563,14 @@ async def watch_certificate(context):
             if current != last_loaded:
                 context.load_cert_chain(CERT_FILE, KEY_FILE)
                 last_loaded = current
-                print("Certificat HTTPS chargé ou actualisé", flush=True)
+                print(
+                    "Certificat HTTPS chargé ou actualisé",
+                    flush=True,
+                )
 
         except (OSError, ssl.SSLError):
             print(
-                "Renouvellement HTTPS non chargé : "
-                "vérifier les certificats.",
+                "Certificat non actualisé : vérifier les fichiers SSL.",
                 flush=True,
             )
 
@@ -473,70 +584,68 @@ async def main():
     tls.minimum_version = ssl.TLSVersion.TLSv1_2
     tls.load_cert_chain(CERT_FILE, KEY_FILE)
 
-    timeout = aiohttp.ClientTimeout(total=10)
+    public = web.Application(
+        middlewares=[public_security],
+        client_max_size=4096,
+    )
+    public["public"] = True
+    public["settings"] = settings
+    public.on_response_prepare.append(security_headers)
 
-    async with aiohttp.ClientSession(timeout=timeout) as client:
-        public = web.Application(client_max_size=4096)
-        public["public"] = True
-        public["settings"] = settings
-        public["client"] = client
-        public.on_response_prepare.append(security_headers)
+    public.router.add_get("/", home)
+    public.router.add_post("/login", login)
+    public.router.add_post("/logout", logout)
+    public.router.add_get("/api/session", session_status)
 
-        public.router.add_get("/", home)
-        public.router.add_post("/login", login)
-        public.router.add_post("/logout", logout)
+    admin = web.Application(client_max_size=4096)
+    admin["public"] = False
+    admin.on_response_prepare.append(security_headers)
+    admin.router.add_get("/", admin_home)
 
-        admin = web.Application(client_max_size=4096)
-        admin["public"] = False
-        admin["client"] = client
-        admin.on_response_prepare.append(security_headers)
-        admin.router.add_get("/", admin_home)
+    public_runner = web.AppRunner(public, access_log=None)
+    admin_runner = web.AppRunner(admin, access_log=None)
 
-        admin_runner = web.AppRunner(admin, access_log=None)
-        public_runner = web.AppRunner(public, access_log=None)
+    watcher = None
 
-        watcher = None
+    try:
+        await admin_runner.setup()
+        await public_runner.setup()
 
-        try:
-            await admin_runner.setup()
-            await public_runner.setup()
+        await web.TCPSite(
+            admin_runner,
+            "0.0.0.0",
+            8099,
+        ).start()
 
-            await web.TCPSite(
-                admin_runner, "0.0.0.0", 8099
-            ).start()
+        await web.TCPSite(
+            public_runner,
+            "0.0.0.0",
+            8443,
+            ssl_context=tls,
+        ).start()
 
-            await web.TCPSite(
-                public_runner,
-                "0.0.0.0",
-                8443,
-                ssl_context=tls,
-            ).start()
+        watcher = asyncio.create_task(watch_certificate(tls))
 
-            watcher = asyncio.create_task(watch_certificate(tls))
+        print(
+            "Portail 0.3.0 démarré : "
+            "Ingress 8099, HTTPS 8443, sécurité uniquement.",
+            flush=True,
+        )
 
-            print(
-                "Portail 0.2.0 démarré : "
-                "Ingress 8099 et HTTPS 8443 avec connexion locataire.",
-                flush=True,
-            )
+        await asyncio.Event().wait()
 
-            await asyncio.Event().wait()
+    finally:
+        if watcher is not None:
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
 
-        finally:
-            if watcher is not None:
-                watcher.cancel()
-                await asyncio.gather(watcher, return_exceptions=True)
-
-            await public_runner.cleanup()
-            await admin_runner.cleanup()
+        await public_runner.cleanup()
+        await admin_runner.cleanup()
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (ValueError, OSError, ssl.SSLError) as error:
-        print(
-            f"Démarrage impossible : {error}",
-            flush=True,
-        )
+        print(f"Démarrage impossible : {error}", flush=True)
         raise SystemExit(1)
