@@ -8,18 +8,21 @@ import os
 import secrets
 import ssl
 import time
+import re
 
 from collections import deque
 from datetime import datetime
 from urllib.parse import urlsplit
 
-from aiohttp import web
+from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 
 INGRESS_IP = "172.30.32.2"
 
-CERT_FILE = "/ssl/portail_fullchain.pem"
-KEY_FILE = "/ssl/portail_privkey.pem"
+CERT_FILE = "/ssl/test_hinojo_fullchain.pem"
+KEY_FILE = "/ssl/test_hinojo_privkey.pem"
+
+
 
 COOKIE_NAME = "__Host-portail-session"
 
@@ -94,12 +97,38 @@ def load_settings():
         raise ValueError(
             "expires_at doit inclure un fuseau, par exemple +02:00."
         )
+    entity = options.get(
+        "consumption_entity",
+        "sensor.conso_hinojo45_consototale",
+    )
+    energy_attribute = options.get(
+        "energy_attribute",
+        "total_consumption",
+    )
+
+    if (
+        not isinstance(entity, str)
+        or not re.fullmatch(r"sensor\.[a-z0-9_]+", entity)
+    ):
+        raise ValueError(
+            "consumption_entity doit être un identifiant sensor valide."
+        )
+
+    if (
+        not isinstance(energy_attribute, str)
+        or not re.fullmatch(r"[a-z][a-z0-9_]*", energy_attribute)
+    ):
+        raise ValueError("energy_attribute est invalide.")
 
     return {
         "address": address,
         "origin": origin,
         "code_hash": hashlib.sha256(code.encode("utf-8")).digest(),
         "expires": end.timestamp(),
+        "consumption_url": (
+            "http://supervisor/core/api/states/" + entity
+        ),
+        "energy_attribute": energy_attribute,
     }
 
 
@@ -183,7 +212,7 @@ async def security_headers(request, response):
     response.headers["Cache-Control"] = "no-store, private"
     response.headers["Pragma"] = "no-cache"
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Referrer-Policy"] = "same-origin"
 
     if request.app["public"]:
         response.headers["X-Frame-Options"] = "DENY"
@@ -342,6 +371,185 @@ async def public_security(request, handler):
 
     return response
 
+# ---------- Home Assistant : lecture seule ----------
+
+async def ha_client_context(app):
+    timeout = ClientTimeout(total=8)
+
+    async with ClientSession(timeout=timeout) as client:
+        app["ha_client"] = client
+        yield
+
+
+def finite_number(value):
+    if isinstance(value, bool):
+        return None
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+    if not math.isfinite(number):
+        return None
+
+    return number
+
+
+def extract_power(data, attributes):
+    # Ne jamais présenter une valeur avec une unité supposée.
+    if attributes.get("unit_of_measurement") != "W":
+        return {"available": False}
+
+    value = finite_number(data.get("state"))
+
+    if value is None:
+        return {"available": False}
+
+    return {
+        "available": True,
+        "value": value,
+        "unit": "W",
+    }
+
+
+def extract_energy(attributes, attribute_name):
+    raw = attributes.get(attribute_name)
+
+    # Format attendu : "8470.25 kWh".
+    # Une valeur numérique sans unité n'est pas interprétée au hasard.
+    if not isinstance(raw, str):
+        return {"available": False}
+
+    parts = raw.split()
+
+    if len(parts) != 2 or parts[1] != "kWh":
+        return {"available": False}
+
+    value = finite_number(parts[0])
+
+    if value is None:
+        return {"available": False}
+
+    return {
+        "available": True,
+        "value": value,
+        "unit": "kWh",
+    }
+
+
+async def read_consumption(request):
+    token = os.environ.get("SUPERVISOR_TOKEN")
+
+    if not token:
+        return {
+            "available": False,
+            "error": "ha_access_not_configured",
+        }, 503
+
+    settings = request.app["settings"]
+
+    try:
+        async with request.app["ha_client"].get(
+            settings["consumption_url"],
+            headers={"Authorization": f"Bearer {token}"},
+            allow_redirects=False,
+        ) as response:
+            if response.status != 200:
+                print(
+                    "Lecture du capteur HA indisponible : "
+                    f"HTTP {response.status}",
+                    flush=True,
+                )
+
+                return {
+                    "available": False,
+                    "error": "consumption_unavailable",
+                }, 503
+
+            data = await response.json()
+
+        if not isinstance(data, dict):
+            raise ValueError("Réponse HA invalide")
+
+        # Si l'entité est signalée indisponible, ne pas afficher
+        # un ancien attribut qui aurait été conservé.
+        if data.get("state") in (None, "unknown", "unavailable"):
+            return {
+                "available": False,
+                "error": "consumption_unavailable",
+            }, 503
+
+        attributes = data.get("attributes", {})
+
+        if not isinstance(attributes, dict):
+            raise ValueError("Attributs HA invalides")
+
+        power = extract_power(data, attributes)
+        energy = extract_energy(
+            attributes,
+            settings["energy_attribute"],
+        )
+
+        available = power["available"] or energy["available"]
+
+        result = {
+            "available": available,
+            "power": power,
+            "energy": energy,
+        }
+
+        if not available:
+            result["error"] = "consumption_unavailable"
+
+        return result, 200 if available else 503
+
+    except (
+        ClientError,
+        asyncio.TimeoutError,
+        ValueError,
+        TypeError,
+        OverflowError,
+    ):
+        return {
+            "available": False,
+            "error": "consumption_unavailable",
+        }, 503
+
+
+async def consumption_api(request):
+    item = get_session(request)
+
+    if item is None:
+        return web.json_response(
+            {"error": "authentication_required"},
+            status=401,
+        )
+
+    data, status = await read_consumption(request)
+
+    # Recontrôle après l'attente de Home Assistant.
+    if stay_expired(request):
+        return expired_response(request)
+
+    if get_session(request) is not item:
+        return web.json_response(
+            {"error": "authentication_required"},
+            status=401,
+        )
+
+    return web.json_response(data, status=status)
+
+
+def measurement_text(measurement, decimals):
+    if not measurement.get("available"):
+        return "Indisponible"
+
+    value = f"{measurement['value']:,.{decimals}f}"
+    value = value.replace(",", " ").replace(".", ",")
+
+    return html.escape(f"{value} {measurement['unit']}")
+
 
 # ---------- Pages publiques ----------
 
@@ -349,18 +557,55 @@ async def home(request):
     item = get_session(request)
 
     if item is not None:
+        data, _status = await read_consumption(request)
+
+        if stay_expired(request):
+            return expired_response(request)
+
+        if get_session(request) is not item:
+            return redirect_home()
+
         csrf = html.escape(item["csrf"], quote=True)
 
+        power = measurement_text(
+            data.get("power", {}),
+            decimals=1,
+        )
+        energy = measurement_text(
+            data.get("energy", {}),
+            decimals=2,
+        )
+
         return page(
-            "Connexion autorisée",
+            "Électricité — lecture seule",
             f"""
-            <p>Votre session est active.</p>
-            <p>Aucun thermostat ni capteur n’est connecté
-            dans cette version de test.</p>
+            <p>Connexion autorisée.</p>
+
+            <h2>Puissance</h2>
+            <p style="font-size: 32px; text-align: center;">
+              {power}
+            </p>
+
+            <h2>Énergie cumulée</h2>
+            <p style="font-size: 32px; text-align: center;">
+              {energy}
+            </p>
+
+            <p>
+              Le cumul correspond à la valeur du capteur.
+              Ce n’est pas la consommation calculée du séjour.
+            </p>
+
+            <form method="get" action="/">
+              <button type="submit">Actualiser</button>
+            </form>
+
             <form method="post" action="/logout">
               <input type="hidden" name="csrf" value="{csrf}">
               <button type="submit">Se déconnecter</button>
             </form>
+
+            <p>Aucune commande sur les équipements.</p>
             """,
         )
 
@@ -539,14 +784,13 @@ async def admin_home(request):
 
     return page(
         "Administration",
-        "<p>Le portail 0.3.0 est démarré.</p>"
+        "<p>Le portail 0.5.0 est démarré.</p>"
         "<p>Cette page ne connecte pas le locataire.</p>"
-        "<p>Pour les tests, ouvrez directement l’adresse HTTPS "
-        "configurée dans portal_url.</p>"
-        "<p>Aucun accès aux équipements Home Assistant "
-        "dans cette version.</p>",
+        "<p>Ouvrez directement l’adresse HTTPS configurée "
+        "pour tester la connexion locataire.</p>"
+        "<p>La puissance et l’énergie Home Assistant sont disponibles "
+        "après authentification, en lecture seule.</p>",
     )
-
 
 # ---------- HTTPS et démarrage ----------
 
@@ -590,12 +834,14 @@ async def main():
     )
     public["public"] = True
     public["settings"] = settings
+    public.cleanup_ctx.append(ha_client_context)
     public.on_response_prepare.append(security_headers)
 
     public.router.add_get("/", home)
     public.router.add_post("/login", login)
     public.router.add_post("/logout", logout)
     public.router.add_get("/api/session", session_status)
+    public.router.add_get("/api/consumption", consumption_api)
 
     admin = web.Application(client_max_size=4096)
     admin["public"] = False
@@ -627,13 +873,12 @@ async def main():
         watcher = asyncio.create_task(watch_certificate(tls))
 
         print(
-            "Portail 0.3.0 démarré : "
-            "Ingress 8099, HTTPS 8443, sécurité uniquement.",
+            "Portail 0.5.0 démarré : "
+            "Ingress 8099, HTTPS 8443, puissance et énergie en lecture seule.",
             flush=True,
         )
 
         await asyncio.Event().wait()
-
     finally:
         if watcher is not None:
             watcher.cancel()
