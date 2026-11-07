@@ -152,6 +152,7 @@ LABELS = {
         "show": "Afficher le code",
         "hide": "Masquer le code",
         "door": "Porte du deuxième étage",
+        "door_help": "Saisissez le code, puis appuyez sur le bouton Yale.",
         "reveal": "Afficher le code de la porte",
         "temp": "Température intérieure",
         "unavailable": "Indisponible",
@@ -165,6 +166,7 @@ LABELS = {
         "show": "Show code",
         "hide": "Hide code",
         "door": "Second-floor door",
+        "door_help": "Enter the code, then press the Yale button.",
         "reveal": "Show door code",
         "temp": "Indoor temperature",
         "unavailable": "Unavailable",
@@ -178,6 +180,7 @@ LABELS = {
         "show": "Code tonen",
         "hide": "Code verbergen",
         "door": "Deur op de tweede verdieping",
+        "door_help": "Voer de code in en druk daarna op de Yale-knop.",
         "reveal": "Deurcode tonen",
         "temp": "Binnentemperatuur",
         "unavailable": "Niet beschikbaar",
@@ -191,6 +194,7 @@ LABELS = {
         "show": "Mostrar código",
         "hide": "Ocultar código",
         "door": "Puerta de la segunda planta",
+        "door_help": "Introduce el código y pulsa el botón Yale.",
         "reveal": "Mostrar código de la puerta",
         "temp": "Temperatura interior",
         "unavailable": "No disponible",
@@ -692,7 +696,7 @@ async def home(request):
             temp = temp.replace(".", ",")
         door_code = html.escape(settings["door_code"])
         door = (
-            f'<details><summary>{t["reveal"]}</summary><p>{door_code}</p></details>'
+            f'<details><summary>{t["reveal"]}</summary><p>{door_code}</p><p>{t["door_help"]}</p></details>'
             if door_code else f'<p>{t["unavailable"]}</p>'
         )
         phone = settings["contact_phone"]
