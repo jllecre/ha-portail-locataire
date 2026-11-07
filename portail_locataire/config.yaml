@@ -1,6 +1,6 @@
 name: Portail locataire
 description: Portail HTTPS sécurisé avec puissance et énergie en lecture seule
-version: "0.5.0"
+version: "0.6.0"
 slug: portail_locataire
 
 arch:
@@ -34,9 +34,16 @@ options:
   consumption_entity: sensor.conso_hinojo45_consototale
   energy_attribute: total_consumption
 
+  temperature_entity: sensor.termostatoz1_local_temperature
+  door_code: ""
+  contact_phone: ""
+
 schema:
   portal_url: str
   guest_code: password
   expires_at: str
   consumption_entity: str
   energy_attribute: str
+  temperature_entity: str
+  door_code: password
+  contact_phone: str
