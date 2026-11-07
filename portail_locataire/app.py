@@ -120,7 +120,17 @@ def load_settings():
     ):
         raise ValueError("energy_attribute est invalide.")
 
+    temperature_entity = options.get("temperature_entity", "sensor.termostatoz1_local_temperature")
+    if not isinstance(temperature_entity, str) or not re.fullmatch(r"sensor\.[a-z0-9_]+", temperature_entity):
+        raise ValueError("temperature_entity doit être un identifiant sensor valide.")
+    phone = options.get("contact_phone", "").strip()
+    if phone and not re.fullmatch(r"\+[1-9][0-9]{6,14}", phone):
+        raise ValueError("contact_phone doit être au format international.")
+
     return {
+        "temperature_url": "http://supervisor/core/api/states/" + temperature_entity,
+        "door_code": options.get("door_code", ""),
+        "contact_phone": phone,
         "address": address,
         "origin": origin,
         "code_hash": hashlib.sha256(code.encode("utf-8")).digest(),
@@ -134,13 +144,77 @@ def load_settings():
 
 # ---------- Réponses et cookies ----------
 
-def page(title, content, status=200):
+LABELS = {
+    "fr": {
+        "welcome": "Bienvenue",
+        "code": "Code du séjour",
+        "login": "Se connecter",
+        "show": "Afficher le code",
+        "hide": "Masquer le code",
+        "door": "Porte du deuxième étage",
+        "reveal": "Afficher le code de la porte",
+        "temp": "Température intérieure",
+        "unavailable": "Indisponible",
+        "contact": "Contacter Jean Luc",
+        "logout": "Se déconnecter"
+    },
+    "en": {
+        "welcome": "Welcome",
+        "code": "Stay code",
+        "login": "Sign in",
+        "show": "Show code",
+        "hide": "Hide code",
+        "door": "Second-floor door",
+        "reveal": "Show door code",
+        "temp": "Indoor temperature",
+        "unavailable": "Unavailable",
+        "contact": "Contact Jean Luc",
+        "logout": "Sign out"
+    },
+    "nl": {
+        "welcome": "Welkom",
+        "code": "Verblijfscode",
+        "login": "Inloggen",
+        "show": "Code tonen",
+        "hide": "Code verbergen",
+        "door": "Deur op de tweede verdieping",
+        "reveal": "Deurcode tonen",
+        "temp": "Binnentemperatuur",
+        "unavailable": "Niet beschikbaar",
+        "contact": "Contact met Jean Luc",
+        "logout": "Uitloggen"
+    },
+    "es": {
+        "welcome": "Bienvenido",
+        "code": "Código de estancia",
+        "login": "Entrar",
+        "show": "Mostrar código",
+        "hide": "Ocultar código",
+        "door": "Puerta de la segunda planta",
+        "reveal": "Mostrar código de la puerta",
+        "temp": "Temperatura interior",
+        "unavailable": "No disponible",
+        "contact": "Contactar con Jean Luc",
+        "logout": "Cerrar sesión"
+    }
+}
+LANGUAGE_NAMES = {"fr": "Français", "en": "English", "nl": "Nederlands", "es": "Español"}
+
+
+def language(request):
+    for code in (request.query.get("lang"), request.cookies.get("portal_lang")):
+        if code in LABELS:
+            return code
+    return "fr"
+
+
+def page(title, content, status=200, lang="fr"):
     document = f"""<!doctype html>
-<html lang="fr">
+<html lang="{lang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Portail du séjour</title>
+  <title>The Panoramic Penthouse</title>
   <style>
     body {{
       margin: 0;
@@ -163,7 +237,12 @@ def page(title, content, status=200):
       margin-top: 12px;
       font-size: 17px;
     }}
-    a {{ color: #bdd9c1; }}
+    a {{ color: #e4f3dc; }}
+    nav {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+    nav a, summary {{ padding: 12px; }}
+    section {{ border-top: 1px solid #8aa6ac; margin-top: 20px; }}
+    summary {{ cursor: pointer; }}
+    .temperature {{ font-size: 2rem; font-weight: bold; }}
     p {{ line-height: 1.5; }}
   </style>
 </head>
@@ -208,7 +287,24 @@ def clear_cookie(response):
     )
 
 
+async def toggle_script(request):
+    script = """
+const button = document.querySelector("#toggle-code");
+const input = document.querySelector("#code");
+button.hidden = false;
+button.addEventListener("click", () => {
+    const visible = input.type === "password";
+    input.type = visible ? "text" : "password";
+    button.textContent = visible ? button.dataset.hide : button.dataset.show;
+});
+"""
+    return web.Response(text=script, content_type="text/javascript")
+
+
 async def security_headers(request, response):
+    if request.query.get("lang") in LABELS:
+        response.set_cookie("portal_lang", request.query["lang"], secure=True,
+                            httponly=True, samesite="Strict", max_age=31536000, path="/")
     response.headers["Cache-Control"] = "no-store, private"
     response.headers["Pragma"] = "no-cache"
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -218,7 +314,7 @@ async def security_headers(request, response):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Content-Security-Policy"] = (
             "default-src 'none'; "
-            "style-src 'unsafe-inline'; "
+            "style-src 'unsafe-inline'; script-src 'self'; "
             "form-action 'self'; "
             "frame-ancestors 'none'; "
             "base-uri 'none'"
@@ -553,60 +649,67 @@ def measurement_text(measurement, decimals):
 
 # ---------- Pages publiques ----------
 
+async def read_temperature(request):
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    if not token:
+        return None
+    try:
+        async with request.app["ha_client"].get(
+            request.app["settings"]["temperature_url"],
+            headers={"Authorization": f"Bearer {token}"},
+            allow_redirects=False,
+        ) as response:
+            if response.status != 200:
+                return None
+            data = await response.json()
+        if data["attributes"].get("unit_of_measurement") != "°C":
+            return None
+        return finite_number(data["state"])
+    except (ClientError, asyncio.TimeoutError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
 async def home(request):
+    lang = language(request)
+    t = LABELS[lang]
+    links = " ".join(
+        f'<a href="/?lang={code}" lang="{code}">{name}</a>'
+        for code, name in LANGUAGE_NAMES.items()
+    )
+    intro = f'<p>The Panoramic Penthouse · Las Colinas</p><nav>{links}</nav>'
     item = get_session(request)
-
     if item is not None:
-        data, _status = await read_consumption(request)
-
+        temperature = await read_temperature(request)
         if stay_expired(request):
             return expired_response(request)
-
         if get_session(request) is not item:
             return redirect_home()
 
+        settings = request.app["settings"]
         csrf = html.escape(item["csrf"], quote=True)
-
-        power = measurement_text(
-            data.get("power", {}),
-            decimals=1,
+        temp = t["unavailable"] if temperature is None else f"{temperature:.1f} °C"
+        if temperature is not None and lang != "en":
+            temp = temp.replace(".", ",")
+        door_code = html.escape(settings["door_code"])
+        door = (
+            f'<details><summary>{t["reveal"]}</summary><p>{door_code}</p></details>'
+            if door_code else f'<p>{t["unavailable"]}</p>'
         )
-        energy = measurement_text(
-            data.get("energy", {}),
-            decimals=2,
-        )
-
+        phone = settings["contact_phone"]
+        contact = f'<section><h2><a href="tel:{phone}">{t["contact"]}</a></h2></section>' if phone else ""
         return page(
-            "Électricité — lecture seule",
+            t["welcome"],
             f"""
-            <p>Connexion autorisée.</p>
-
-            <h2>Puissance</h2>
-            <p style="font-size: 32px; text-align: center;">
-              {power}
-            </p>
-
-            <h2>Énergie cumulée</h2>
-            <p style="font-size: 32px; text-align: center;">
-              {energy}
-            </p>
-
-            <p>
-              Le cumul correspond à la valeur du capteur.
-              Ce n’est pas la consommation calculée du séjour.
-            </p>
-
-            <form method="get" action="/">
-              <button type="submit">Actualiser</button>
-            </form>
-
+            {intro}
+            <section><h2>{t["door"]}</h2>{door}</section>
+            <section><h2>{t["temp"]}</h2><p class="temperature">{temp}</p></section>
+            {contact}
             <form method="post" action="/logout">
               <input type="hidden" name="csrf" value="{csrf}">
-              <button type="submit">Se déconnecter</button>
+              <button type="submit">{t["logout"]}</button>
             </form>
-
-            <p>Aucune commande sur les équipements.</p>
             """,
+            lang=lang,
         )
 
     clean_sessions()
@@ -632,12 +735,12 @@ async def home(request):
     csrf = html.escape(item["csrf"], quote=True)
 
     response = page(
-        "Bienvenue",
+        t["welcome"],
         f"""
-        <p>Saisissez le code fourni pour votre séjour.</p>
+        {intro}
         <form method="post" action="/login">
           <input type="hidden" name="csrf" value="{csrf}">
-          <label for="code">Code du séjour</label>
+          <label for="code">{t["code"]}</label>
           <input
             id="code"
             name="code"
@@ -646,9 +749,13 @@ async def home(request):
             maxlength="128"
             required
           >
-          <button type="submit">Se connecter</button>
+          <button type="button" id="toggle-code" hidden
+                  data-show="{t['show']}" data-hide="{t['hide']}">{t["show"]}</button>
+          <button type="submit">{t["login"]}</button>
         </form>
+        <script src="/toggle-code.js" defer></script>
         """,
+        lang=lang,
     )
 
     set_cookie(
@@ -784,7 +891,7 @@ async def admin_home(request):
 
     return page(
         "Administration",
-        "<p>Le portail 0.5.0 est démarré.</p>"
+        "<p>Le portail 0.6.0 est démarré.</p>"
         "<p>Cette page ne connecte pas le locataire.</p>"
         "<p>Ouvrez directement l’adresse HTTPS configurée "
         "pour tester la connexion locataire.</p>"
@@ -838,6 +945,7 @@ async def main():
     public.on_response_prepare.append(security_headers)
 
     public.router.add_get("/", home)
+    public.router.add_get("/toggle-code.js", toggle_script)
     public.router.add_post("/login", login)
     public.router.add_post("/logout", logout)
     public.router.add_get("/api/session", session_status)
@@ -873,8 +981,8 @@ async def main():
         watcher = asyncio.create_task(watch_certificate(tls))
 
         print(
-            "Portail 0.5.0 démarré : "
-            "Ingress 8099, HTTPS 8443, puissance et énergie en lecture seule.",
+            "Portail 0.6.0 démarré : "
+            "Ingress 8099, HTTPS 8443, guide de séjour.",
             flush=True,
         )
 
