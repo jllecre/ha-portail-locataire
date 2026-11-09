@@ -343,10 +343,19 @@ button.addEventListener("click", () => {
     return web.Response(text=script, content_type="text/javascript")
 
 
+@web.middleware
+async def remember_language(request, handler):
+    response = await handler(request)
+    selected = request.query.get("lang")
+    if selected in LABELS:
+        response.set_cookie(
+            "portal_lang", selected, secure=True, httponly=True,
+            samesite="Strict", max_age=31536000, path="/",
+        )
+    return response
+
+
 async def security_headers(request, response):
-    if request.query.get("lang") in LABELS:
-        response.set_cookie("portal_lang", request.query["lang"], secure=True,
-                            httponly=True, samesite="Strict", max_age=31536000, path="/")
     response.headers["Cache-Control"] = "no-store, private"
     response.headers["Pragma"] = "no-cache"
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -927,7 +936,7 @@ async def admin_home(request):
 
     return page(
         "Administration",
-        "<p>Le portail 0.6.1 est démarré.</p>"
+        "<p>Le portail 0.6.2 est démarré.</p>"
         "<p>Cette page ne connecte pas le locataire.</p>"
         "<p>Ouvrez directement l’adresse HTTPS configurée "
         "pour tester la connexion locataire.</p>"
@@ -972,7 +981,7 @@ async def main():
     tls.load_cert_chain(CERT_FILE, KEY_FILE)
 
     public = web.Application(
-        middlewares=[public_security],
+        middlewares=[remember_language, public_security],
         client_max_size=4096,
     )
     public["public"] = True
@@ -1017,7 +1026,7 @@ async def main():
         watcher = asyncio.create_task(watch_certificate(tls))
 
         print(
-            "Portail 0.6.1 démarré : "
+            "Portail 0.6.2 démarré : "
             "Ingress 8099, HTTPS 8443, guide de séjour.",
             flush=True,
         )
