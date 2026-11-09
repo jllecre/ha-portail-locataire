@@ -202,11 +202,49 @@ LABELS = {
         "logout": "Cerrar sesión"
     }
 }
+ACCESS_ERRORS = {
+    "fr": {
+        "wrong": "Code du séjour incorrect.",
+        "expired": "Votre accès à ce séjour a expiré.",
+        "form": "Le formulaire a expiré. Saisissez à nouveau votre code.",
+        "rate": "Trop de tentatives. Réessayez dans {wait} s.",
+        "busy": "Le portail est temporairement indisponible. Réessayez dans quelques instants."
+    },
+    "en": {
+        "wrong": "Incorrect stay code.",
+        "expired": "Your access for this stay has expired.",
+        "form": "The form expired. Please enter your code again.",
+        "rate": "Too many attempts. Try again in {wait} s.",
+        "busy": "The portal is temporarily unavailable. Please try again shortly."
+    },
+    "nl": {
+        "wrong": "Onjuiste verblijfscode.",
+        "expired": "Je toegang voor dit verblijf is verlopen.",
+        "form": "Het formulier is verlopen. Voer je code opnieuw in.",
+        "rate": "Te veel pogingen. Probeer het over {wait} s opnieuw.",
+        "busy": "Het portaal is tijdelijk niet beschikbaar. Probeer het zo opnieuw."
+    },
+    "es": {
+        "wrong": "El código de estancia no es correcto.",
+        "expired": "Tu acceso para esta estancia ha caducado.",
+        "form": "El formulario ha caducado. Vuelve a introducir tu código.",
+        "rate": "Demasiados intentos. Vuelve a intentarlo en {wait} s.",
+        "busy": "El portal no está disponible temporalmente. Vuelve a intentarlo en unos instantes."
+    }
+}
+
 LANGUAGE_NAMES = {"fr": "Français", "en": "English", "nl": "Nederlands", "es": "Español"}
 
 
 def language(request):
     for code in (request.query.get("lang"), request.cookies.get("portal_lang")):
+        if code in LABELS:
+            return code
+    for entry in request.headers.get("Accept-Language", "").split(","):
+        tag, _, weight = entry.partition(";")
+        if weight.strip() in ("q=0", "q=0.0", "q=0.00", "q=0.000"):
+            continue
+        code = tag.strip().lower().split("-")[0]
         if code in LABELS:
             return code
     return "fr"
@@ -369,11 +407,7 @@ def expired_response(request):
             status=403,
         )
     else:
-        response = page(
-            "Accès terminé",
-            "<p>L’accès à ce séjour a expiré.</p>",
-            status=403,
-        )
+        response = access_page(request, "expired", status=403)
 
     clear_cookie(response)
     return response
@@ -411,13 +445,8 @@ def valid_csrf(form, item):
     )
 
 
-def invalid_form_response():
-    return page(
-        "Formulaire périmé",
-        '<p>Rechargez la page puis réessayez.</p>'
-        '<p><a href="/">Retour au portail</a></p>',
-        status=403,
-    )
+def invalid_form_response(request):
+    return access_page(request, "form", status=403)
 
 
 @web.middleware
@@ -716,6 +745,24 @@ async def home(request):
             lang=lang,
         )
 
+    return access_page(request)
+
+
+def access_page(request, error=None, status=200, wait=None):
+    lang = language(request)
+    t = LABELS[lang]
+    links = " ".join(
+        f'<a href="/?lang={code}" lang="{code}">{name}</a>'
+        for code, name in LANGUAGE_NAMES.items()
+    )
+    intro = f'<p>The Panoramic Penthouse · Las Colinas</p><nav>{links}</nav>'
+    message = ""
+    if error:
+        message = html.escape(ACCESS_ERRORS[lang][error].format(wait=wait))
+        message = f'<p role="alert">{message}</p>'
+    if error == "expired":
+        return page(t["welcome"], intro + message, status=status, lang=lang)
+
     clean_sessions()
 
     old_token = request.cookies.get(COOKIE_NAME, "")
@@ -753,20 +800,17 @@ async def home(request):
             maxlength="128"
             required
           >
+          {message}
           <button type="button" id="toggle-code" hidden
                   data-show="{t['show']}" data-hide="{t['hide']}">{t["show"]}</button>
           <button type="submit">{t["login"]}</button>
         </form>
         <script src="/toggle-code.js" defer></script>
         """,
+        status=status,
         lang=lang,
     )
-
-    set_cookie(
-        response,
-        token,
-        item["deadline"] - time.monotonic(),
-    )
+    set_cookie(response, token, item["deadline"] - time.monotonic())
     return response
 
 
@@ -783,12 +827,7 @@ async def login(request):
             1,
             math.ceil(attempts[0] + LOGIN_WINDOW - now),
         )
-        response = page(
-            "Veuillez patienter",
-            f"<p>Trop de tentatives. Réessayez dans "
-            f"{wait} secondes.</p>",
-            status=429,
-        )
+        response = access_page(request, "rate", status=429, wait=wait)
         response.headers["Retry-After"] = str(wait)
         return response
 
@@ -805,7 +844,7 @@ async def login(request):
     item = pending.get(old_token)
 
     if not valid_csrf(form, item):
-        return invalid_form_response()
+        return invalid_form_response(request)
 
     supplied = form.get("code", "")
 
@@ -820,19 +859,10 @@ async def login(request):
         supplied_hash,
         request.app["settings"]["code_hash"],
     ):
-        return page(
-            "Connexion refusée",
-            '<p>Code du séjour incorrect.</p>'
-            '<p><a href="/">Réessayer</a></p>',
-            status=401,
-        )
+        return access_page(request, "wrong", status=401)
 
     if len(sessions) >= MAX_SESSIONS:
-        return page(
-            "Portail temporairement indisponible",
-            "<p>Le nombre maximal de sessions est atteint.</p>",
-            status=503,
-        )
+        return access_page(request, "busy", status=503)
 
     # Le formulaire de connexion est consommé.
     # Le cookie anonyme n'est jamais réutilisé comme session autorisée.
@@ -863,7 +893,9 @@ async def logout(request):
     item = get_session(request)
 
     if item is not None and not valid_csrf(form, item):
-        return invalid_form_response()
+        lang = language(request)
+        message = html.escape(ACCESS_ERRORS[lang]["form"])
+        return page(LABELS[lang]["welcome"], f'<p role="alert">{message}</p>', status=403, lang=lang)
 
     # Si la session a déjà disparu, la déconnexion est sans effet
     # sur le serveur, mais nettoie tout de même le cookie.
@@ -895,7 +927,7 @@ async def admin_home(request):
 
     return page(
         "Administration",
-        "<p>Le portail 0.6.0 est démarré.</p>"
+        "<p>Le portail 0.6.1 est démarré.</p>"
         "<p>Cette page ne connecte pas le locataire.</p>"
         "<p>Ouvrez directement l’adresse HTTPS configurée "
         "pour tester la connexion locataire.</p>"
@@ -985,7 +1017,7 @@ async def main():
         watcher = asyncio.create_task(watch_certificate(tls))
 
         print(
-            "Portail 0.6.0 démarré : "
+            "Portail 0.6.1 démarré : "
             "Ingress 8099, HTTPS 8443, guide de séjour.",
             flush=True,
         )
