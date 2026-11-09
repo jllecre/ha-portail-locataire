@@ -1,6 +1,6 @@
 name: Portail locataire
 description: Portail HTTPS sécurisé avec puissance et énergie en lecture seule
-version: "0.6.0"
+version: "0.6.1"
 slug: portail_locataire
 
 arch:
