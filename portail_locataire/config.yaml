@@ -1,6 +1,6 @@
 name: Portail locataire
 description: Portail HTTPS sécurisé avec puissance et énergie en lecture seule
-version: "0.6.2"
+version: "0.6.3"
 slug: portail_locataire
 
 arch:
@@ -37,6 +37,7 @@ options:
   temperature_entity: sensor.termostatoz1_local_temperature
   door_code: ""
   contact_phone: ""
+  guest_name: ""
 
 schema:
   portal_url: str
@@ -47,3 +48,4 @@ schema:
   temperature_entity: str
   door_code: password
   contact_phone: str
+  guest_name: str
