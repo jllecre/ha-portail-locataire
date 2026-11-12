@@ -123,6 +123,15 @@ def load_settings():
     temperature_entity = options.get("temperature_entity", "sensor.termostatoz1_local_temperature")
     if not isinstance(temperature_entity, str) or not re.fullmatch(r"sensor\.[a-z0-9_]+", temperature_entity):
         raise ValueError("temperature_entity doit être un identifiant sensor valide.")
+    guest_name = options.get("guest_name", "")
+    if (
+        not isinstance(guest_name, str)
+        or len(guest_name) > 80
+        or any(ord(character) < 32 or ord(character) == 127 for character in guest_name)
+    ):
+        raise ValueError("guest_name doit contenir au maximum 80 caractères sans caractère de contrôle.")
+    guest_name = guest_name.strip()
+
     phone = options.get("contact_phone", "").strip()
     if phone and not re.fullmatch(r"\+[1-9][0-9]{6,14}", phone):
         raise ValueError("contact_phone doit être au format international.")
@@ -131,6 +140,7 @@ def load_settings():
         "temperature_url": "http://supervisor/core/api/states/" + temperature_entity,
         "door_code": options.get("door_code", ""),
         "contact_phone": phone,
+        "guest_name": guest_name,
         "address": address,
         "origin": origin,
         "code_hash": hashlib.sha256(code.encode("utf-8")).digest(),
@@ -282,6 +292,26 @@ def page(title, content, status=200, lang="fr"):
     a {{ color: #e4f3dc; }}
     nav {{ display: flex; flex-wrap: wrap; gap: 8px; }}
     nav a, summary {{ padding: 12px; }}
+    nav a {{
+      display: inline-flex;
+      min-width: 44px;
+      min-height: 44px;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      border: 1px solid #8aa6ac;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+    }}
+    nav a[aria-current="true"] {{
+      background: #e4f3dc;
+      color: #10252b;
+    }}
+    a:focus-visible, summary:focus-visible, button:focus-visible {{
+      outline: 3px solid #f3cc7a;
+      outline-offset: 3px;
+    }}
     section {{ border-top: 1px solid #8aa6ac; margin-top: 20px; }}
     summary {{ cursor: pointer; }}
     .temperature {{ font-size: 2rem; font-weight: bold; }}
@@ -714,11 +744,7 @@ async def read_temperature(request):
 async def home(request):
     lang = language(request)
     t = LABELS[lang]
-    links = " ".join(
-        f'<a href="/?lang={code}" lang="{code}">{name}</a>'
-        for code, name in LANGUAGE_NAMES.items()
-    )
-    intro = f'<p>The Panoramic Penthouse · Las Colinas</p><nav>{links}</nav>'
+    intro = '<p>The Panoramic Penthouse · Las Colinas</p>'
     item = get_session(request)
     if item is not None:
         temperature = await read_temperature(request)
@@ -738,9 +764,17 @@ async def home(request):
             if door_code else f'<p>{t["unavailable"]}</p>'
         )
         phone = settings["contact_phone"]
-        contact = f'<section><h2><a href="tel:{phone}">{t["contact"]}</a></h2></section>' if phone else ""
+        contact = (
+            f'<section><h2><a href="https://wa.me/{phone[1:]}">'
+            f'{t["contact"]} · WhatsApp</a></h2></section>'
+            if phone else ""
+        )
+        guest_name = settings["guest_name"]
+        welcome = t["welcome"]
+        if guest_name:
+            welcome = f"{welcome} {guest_name}"
         return page(
-            t["welcome"],
+            welcome,
             f"""
             {intro}
             <section><h2>{t["door"]}</h2>{door}</section>
@@ -761,7 +795,8 @@ def access_page(request, error=None, status=200, wait=None):
     lang = language(request)
     t = LABELS[lang]
     links = " ".join(
-        f'<a href="/?lang={code}" lang="{code}">{name}</a>'
+        f'<a href="/?lang={code}" lang="{code}" aria-label="{name}"'
+        f' aria-current="{str(code == lang).lower()}">{code.upper()}</a>'
         for code, name in LANGUAGE_NAMES.items()
     )
     intro = f'<p>The Panoramic Penthouse · Las Colinas</p><nav>{links}</nav>'
@@ -936,7 +971,7 @@ async def admin_home(request):
 
     return page(
         "Administration",
-        "<p>Le portail 0.6.2 est démarré.</p>"
+        "<p>Le portail 0.6.3 est démarré.</p>"
         "<p>Cette page ne connecte pas le locataire.</p>"
         "<p>Ouvrez directement l’adresse HTTPS configurée "
         "pour tester la connexion locataire.</p>"
@@ -1026,7 +1061,7 @@ async def main():
         watcher = asyncio.create_task(watch_certificate(tls))
 
         print(
-            "Portail 0.6.2 démarré : "
+            "Portail 0.6.3 démarré : "
             "Ingress 8099, HTTPS 8443, guide de séjour.",
             flush=True,
         )
