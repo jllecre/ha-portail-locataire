@@ -132,11 +132,19 @@ def load_settings():
         raise ValueError("guest_name doit contenir au maximum 80 caractères sans caractère de contrôle.")
     guest_name = guest_name.strip()
 
+    outdoor_entity = options.get(
+        "outdoor_temperature_entity",
+        "sensor.hinojo_45_temperature_exterieure",
+    )
+    if not isinstance(outdoor_entity, str) or not re.fullmatch(r"sensor\.[a-z0-9_]+", outdoor_entity):
+        raise ValueError("outdoor_temperature_entity doit être un identifiant sensor valide.")
+
     phone = options.get("contact_phone", "").strip()
     if phone and not re.fullmatch(r"\+[1-9][0-9]{6,14}", phone):
         raise ValueError("contact_phone doit être au format international.")
 
     return {
+        "outdoor_temperature_url": "http://supervisor/core/api/states/" + outdoor_entity,
         "temperature_url": "http://supervisor/core/api/states/" + temperature_entity,
         "door_code": options.get("door_code", ""),
         "contact_phone": phone,
@@ -395,7 +403,7 @@ async def security_headers(request, response):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Content-Security-Policy"] = (
             "default-src 'none'; "
-            "style-src 'unsafe-inline'; script-src 'self'; "
+            "style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; "
             "form-action 'self'; "
             "frame-ancestors 'none'; "
             "base-uri 'none'"
@@ -721,13 +729,13 @@ def measurement_text(measurement, decimals):
 
 # ---------- Pages publiques ----------
 
-async def read_temperature(request):
+async def read_temperature(request, url_key="temperature_url"):
     token = os.environ.get("SUPERVISOR_TOKEN")
     if not token:
         return None
     try:
         async with request.app["ha_client"].get(
-            request.app["settings"]["temperature_url"],
+            request.app["settings"][url_key],
             headers={"Authorization": f"Bearer {token}"},
             allow_redirects=False,
         ) as response:
@@ -739,6 +747,24 @@ async def read_temperature(request):
         return finite_number(data["state"])
     except (ClientError, asyncio.TimeoutError, ValueError, KeyError, TypeError, AttributeError):
         return None
+
+
+async def welcome_script(request):
+    return web.Response(text=WELCOME_SCRIPT, content_type="text/javascript")
+
+
+async def welcome_api(request):
+    # Seule la température extérieure configurée est publique.
+    async with request.app["outdoor_lock"]:
+        cache = request.app["outdoor_cache"]
+        if time.monotonic() >= cache["refresh_at"]:
+            cache["value"] = await read_temperature(request, "outdoor_temperature_url")
+            cache["refresh_at"] = time.monotonic() + 60
+        value = cache["value"]
+    return web.json_response({"temperature_c": value})
+
+
+WELCOME_SCRIPT = "const clock = document.querySelector(\"#welcome-time\");\nconst temperature = document.querySelector(\"#welcome-temperature\");\nconst formatter = new Intl.DateTimeFormat(\"es-ES\", {\n    timeZone: \"Europe/Madrid\",\n    hour: \"2-digit\",\n    minute: \"2-digit\",\n    hourCycle: \"h23\"\n});\nconst unavailable = \"Temperatura exterior no disponible\";\nlet loading = false;\n\nfunction updateClock() {\n    clock.textContent = \" Son las \" + formatter.format(new Date());\n}\n\nasync function updateTemperature() {\n    if (loading || document.hidden) return;\n    loading = true;\n    try {\n        const response = await fetch(\"/api/welcome\", {\n            cache: \"no-store\",\n            credentials: \"same-origin\"\n        });\n        if (!response.ok) throw new Error(\"Temperature unavailable\");\n        const data = await response.json();\n        const value = data.temperature_c;\n        temperature.textContent = typeof value === \"number\" && Number.isFinite(value)\n            ? new Intl.NumberFormat(\"es-ES\", {\n                minimumFractionDigits: 1,\n                maximumFractionDigits: 1\n              }).format(value) + \" °C\"\n            : unavailable;\n    } catch {\n        temperature.textContent = unavailable;\n    } finally {\n        loading = false;\n    }\n}\n\nupdateClock();\nupdateTemperature();\nsetInterval(updateClock, 15000);\nsetInterval(updateTemperature, 60000);\ndocument.addEventListener(\"visibilitychange\", () => {\n    if (!document.hidden) {\n        updateClock();\n        updateTemperature();\n    }\n});\n"
 
 
 async def home(request):
@@ -799,7 +825,14 @@ def access_page(request, error=None, status=200, wait=None):
         f' aria-current="{str(code == lang).lower()}">{code.upper()}</a>'
         for code, name in LANGUAGE_NAMES.items()
     )
-    intro = f'<p>The Panoramic Penthouse · Las Colinas</p><nav>{links}</nav>'
+    intro = (
+        '<p>The Panoramic Penthouse · Las Colinas</p>'
+        '<p lang="es">¡Hola!<span id="welcome-time"></span>'
+        ' · <span aria-hidden="true">🌡️</span> '
+        '<span id="welcome-temperature">Temperatura exterior no disponible</span></p>'
+        '<script src="/welcome.js" defer></script>'
+        f'<nav>{links}</nav>'
+    )
     message = ""
     if error:
         message = html.escape(ACCESS_ERRORS[lang][error].format(wait=wait))
@@ -971,7 +1004,7 @@ async def admin_home(request):
 
     return page(
         "Administration",
-        "<p>Le portail 0.6.3 est démarré.</p>"
+        "<p>Le portail 0.6.4 est démarré.</p>"
         "<p>Cette page ne connecte pas le locataire.</p>"
         "<p>Ouvrez directement l’adresse HTTPS configurée "
         "pour tester la connexion locataire.</p>"
@@ -1021,11 +1054,15 @@ async def main():
     )
     public["public"] = True
     public["settings"] = settings
+    public["outdoor_lock"] = asyncio.Lock()
+    public["outdoor_cache"] = {"value": None, "refresh_at": 0}
     public.cleanup_ctx.append(ha_client_context)
     public.on_response_prepare.append(security_headers)
 
     public.router.add_get("/", home)
     public.router.add_get("/toggle-code.js", toggle_script)
+    public.router.add_get("/welcome.js", welcome_script)
+    public.router.add_get("/api/welcome", welcome_api)
     public.router.add_post("/login", login)
     public.router.add_post("/logout", logout)
     public.router.add_get("/api/session", session_status)
@@ -1061,7 +1098,7 @@ async def main():
         watcher = asyncio.create_task(watch_certificate(tls))
 
         print(
-            "Portail 0.6.3 démarré : "
+            "Portail 0.6.4 démarré : "
             "Ingress 8099, HTTPS 8443, guide de séjour.",
             flush=True,
         )
