@@ -1,6 +1,6 @@
 name: Portail locataire
 description: Portail HTTPS sécurisé avec puissance et énergie en lecture seule
-version: "0.6.3"
+version: "0.6.4"
 slug: portail_locataire
 
 arch:
@@ -38,6 +38,7 @@ options:
   door_code: ""
   contact_phone: ""
   guest_name: ""
+  outdoor_temperature_entity: sensor.hinojo_45_temperature_exterieure
 
 schema:
   portal_url: str
@@ -49,3 +50,4 @@ schema:
   door_code: password
   contact_phone: str
   guest_name: str
+  outdoor_temperature_entity: str
