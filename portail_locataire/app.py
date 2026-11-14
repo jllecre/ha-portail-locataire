@@ -151,6 +151,17 @@ def load_settings():
     ):
         raise ValueError("Les entités de zone doivent être des identifiants climate valides.")
 
+    stay_sources = {
+        "daily_energy_entity": options.get("daily_energy_entity", "sensor.shelly_shelly_em_5e1505_2_consommation_shelly_journaliere"),
+        "stay_energy_entity": options.get("stay_energy_entity", "sensor.shelly_shelly_em_5e1505_2_conso_sejour_locataire_hinojo45"),
+        "stay_calendar_entity": options.get("stay_calendar_entity", "calendar.location_hinojo45"),
+        "rental_status_entity": options.get("rental_status_entity", "input_select.statut_location"),
+    }
+    for key, value in stay_sources.items():
+        domain = {"stay_calendar_entity": "calendar", "rental_status_entity": "input_select"}.get(key, "sensor")
+        if not isinstance(value, str) or not re.fullmatch(domain + r"\.[a-z0-9_]+", value):
+            raise ValueError(f"{key} doit être un identifiant {domain} valide.")
+
     phone = options.get("contact_phone", "").strip()
     if phone and not re.fullmatch(r"\+[1-9][0-9]{6,14}", phone):
         raise ValueError("contact_phone doit être au format international.")
@@ -162,6 +173,7 @@ def load_settings():
         "contact_phone": phone,
         "guest_name": guest_name,
         "zone_entities": zone_entities,
+        "stay_sources": stay_sources,
         "address": address,
         "origin": origin,
         "code_hash": hashlib.sha256(code.encode("utf-8")).digest(),
@@ -192,7 +204,15 @@ LABELS = {
         "logout": "Se déconnecter",
         "zones": "Températures par zone",
         "zone": "Zone",
-        "soon": "Prochainement"
+        "soon": "Prochainement",
+        "energy": "Votre consommation",
+        "energy_today": "Aujourd’hui",
+        "energy_stay": "Depuis votre arrivée",
+        "energy_quota": "Électricité incluse",
+        "energy_excess": "Dépassement du quota",
+        "days": "jours",
+        "energy_note": "Le quota de 20 kWh par jour est calculé sur l’ensemble du séjour. Le compteur du séjour est remis à zéro par votre hôte à l’arrivée.",
+        "energy_no_dates": "Dates du séjour indisponibles"
     },
     "en": {
         "plan": "Zone plan — tap to enlarge",
@@ -210,7 +230,15 @@ LABELS = {
         "logout": "Sign out",
         "zones": "Zone temperatures",
         "zone": "Zone",
-        "soon": "Coming soon"
+        "soon": "Coming soon",
+        "energy": "Your electricity use",
+        "energy_today": "Today",
+        "energy_stay": "Since your arrival",
+        "energy_quota": "Electricity included",
+        "energy_excess": "Above the allowance",
+        "days": "days",
+        "energy_note": "The allowance of 20 kWh per day applies to the whole stay. Your host resets the stay meter on arrival.",
+        "energy_no_dates": "Stay dates unavailable"
     },
     "nl": {
         "plan": "Zoneplan — tik om te vergroten",
@@ -228,7 +256,15 @@ LABELS = {
         "logout": "Uitloggen",
         "zones": "Temperaturen per zone",
         "zone": "Zone",
-        "soon": "Binnenkort"
+        "soon": "Binnenkort",
+        "energy": "Je elektriciteitsverbruik",
+        "energy_today": "Vandaag",
+        "energy_stay": "Sinds je aankomst",
+        "energy_quota": "Inbegrepen elektriciteit",
+        "energy_excess": "Boven de inbegrepen hoeveelheid",
+        "days": "dagen",
+        "energy_note": "De inbegrepen hoeveelheid van 20 kWh per dag geldt voor het hele verblijf. Je gastheer zet de verblijfsteller bij aankomst op nul.",
+        "energy_no_dates": "Verblijfsdatums niet beschikbaar"
     },
     "es": {
         "plan": "Plano de zonas — toca para ampliar",
@@ -246,7 +282,15 @@ LABELS = {
         "logout": "Cerrar sesión",
         "zones": "Temperaturas por zona",
         "zone": "Zona",
-        "soon": "Próximamente"
+        "soon": "Próximamente",
+        "energy": "Tu consumo eléctrico",
+        "energy_today": "Hoy",
+        "energy_stay": "Desde tu llegada",
+        "energy_quota": "Electricidad incluida",
+        "energy_excess": "Exceso sobre lo incluido",
+        "days": "días",
+        "energy_note": "Los 20 kWh diarios incluidos se calculan para toda la estancia. Tu anfitrión pone el contador de la estancia a cero a la llegada.",
+        "energy_no_dates": "Fechas de estancia no disponibles"
     }
 }
 ACCESS_ERRORS = {
@@ -884,13 +928,145 @@ async def zones_script(request):
 ZONES_SCRIPT = "const container = document.querySelector(\"#zones\");\nconst cards = Array.from(container.querySelectorAll(\"[data-zone-value]\"));\nconst formatter = new Intl.NumberFormat(document.documentElement.lang, {\n    minimumFractionDigits: 1, maximumFractionDigits: 1\n});\nlet loading = false;\nfunction render(values) {\n    cards.forEach((card, index) => {\n        const value = values[index];\n        card.textContent = typeof value === \"number\" && Number.isFinite(value)\n            ? formatter.format(value) + \" °C\" : container.dataset.unavailable;\n    });\n}\nasync function refreshZones() {\n    if (loading || document.hidden) return;\n    loading = true;\n    try {\n        const response = await fetch(\"/api/zones\", {cache: \"no-store\", credentials: \"same-origin\"});\n        if (response.status === 401 || response.status === 403) {\n            render([]);\n            window.location.replace(\"/\");\n            return;\n        }\n        if (!response.ok) throw new Error(\"Zones unavailable\");\n        const data = await response.json();\n        if (!Array.isArray(data.temperatures_c)) throw new Error(\"Invalid zones\");\n        render(data.temperatures_c);\n    } catch {\n        render([]);\n    } finally {\n        loading = false;\n    }\n}\nsetInterval(refreshZones, 60000);\ndocument.addEventListener(\"visibilitychange\", () => {\n    if (!document.hidden) refreshZones();\n});\n"
 
 
+def energy_kwh(data):
+    if not isinstance(data, dict):
+        return None
+    attributes = data.get("attributes", {})
+    if not isinstance(attributes, dict):
+        return None
+    value = finite_number(data.get("state"))
+    unit = attributes.get("unit_of_measurement")
+    if value is None or value < 0 or unit not in ("Wh", "kWh"):
+        return None
+    return value / 1000 if unit == "Wh" else value
+
+
+def stay_energy_data(daily, stay, calendar, rental):
+    result = {
+        "today_kwh": energy_kwh(daily), "stay_kwh": None,
+        "quota_kwh": None, "excess_kwh": None,
+        "start_date": None, "end_date": None, "days": None,
+    }
+    if calendar.get("state") != "on" or rental.get("state") != "Arrivée":
+        return result
+    attributes = calendar.get("attributes", {})
+    if not isinstance(attributes, dict):
+        return result
+    try:
+        start = datetime.fromisoformat(attributes["start_time"]).date()
+        end = datetime.fromisoformat(attributes["end_time"]).date()
+    except (ValueError, TypeError, KeyError):
+        return result
+    days = (end - start).days
+    if days <= 0:
+        return result
+    total = energy_kwh(stay)
+    quota = days * 20
+    result.update(
+        stay_kwh=total, quota_kwh=quota,
+        excess_kwh=None if total is None else max(0, round(total - quota, 6)),
+        start_date=start.isoformat(), end_date=end.isoformat(), days=days,
+    )
+    return result
+
+
+async def read_stay_energy(request):
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    empty = stay_energy_data({}, {}, {}, {})
+    if not token:
+        return empty
+
+    async def read_state(entity):
+        try:
+            async with request.app["ha_client"].get(
+                "http://supervisor/core/api/states/" + entity,
+                headers={"Authorization": f"Bearer {token}"},
+                allow_redirects=False,
+                timeout=ClientTimeout(total=5),
+            ) as response:
+                if response.status != 200:
+                    return {}
+                data = await response.json()
+            return data if isinstance(data, dict) else {}
+        except (ClientError, asyncio.TimeoutError, ValueError, TypeError):
+            return {}
+
+    sources = request.app["settings"]["stay_sources"]
+    data = await asyncio.gather(*(
+        read_state(sources[key]) for key in (
+            "daily_energy_entity", "stay_energy_entity",
+            "stay_calendar_entity", "rental_status_entity",
+        )
+    ))
+    return stay_energy_data(*data)
+
+
+async def cached_stay_energy(request):
+    async with request.app["energy_lock"]:
+        cache = request.app["energy_cache"]
+        if time.monotonic() >= cache["refresh_at"]:
+            cache["data"] = await read_stay_energy(request)
+            cache["refresh_at"] = time.monotonic() + 60
+        return dict(cache["data"])
+
+
+async def stay_energy_api(request):
+    item = get_session(request)
+    if item is None:
+        return web.json_response({"error": "authentication_required"}, status=401)
+    data = await cached_stay_energy(request)
+    if stay_expired(request):
+        return expired_response(request)
+    if get_session(request) is not item:
+        return web.json_response({"error": "authentication_required"}, status=401)
+    return web.json_response(data)
+
+
+def energy_section(data, lang):
+    t = LABELS[lang]
+    cards = []
+    for field, label in (
+        ("today_kwh", "energy_today"), ("stay_kwh", "energy_stay"),
+        ("quota_kwh", "energy_quota"), ("excess_kwh", "energy_excess"),
+    ):
+        value = data[field]
+        text = t["unavailable"] if value is None else f"{value:.2f} kWh"
+        if value is not None and lang != "en":
+            text = text.replace(".", ",")
+        cards.append(
+            f'<article class="zone-card"><h3>{t[label]}</h3>'
+            f'<p class="temperature" data-energy-value="{field}">{text}</p></article>'
+        )
+    dates = t["energy_no_dates"]
+    if data["days"] is not None:
+        start = datetime.fromisoformat(data["start_date"]).strftime("%d/%m/%Y")
+        end = datetime.fromisoformat(data["end_date"]).strftime("%d/%m/%Y")
+        dates = f'{start} – {end} · {data["days"]} {t["days"]}'
+    return (
+        f'<section id="stay-energy" data-unavailable="{t["unavailable"]}"'
+        f' data-no-dates="{t["energy_no_dates"]}" data-days="{t["days"]}">'
+        f'<h2>{t["energy"]}</h2><p data-energy-dates>{dates}</p>'
+        f'<div class="zones-grid">{"".join(cards)}</div><p>{t["energy_note"]}</p>'
+        '</section><script src="/stay-energy.js" defer></script>'
+    )
+
+
+async def stay_energy_script(request):
+    return web.Response(text=STAY_ENERGY_SCRIPT, content_type="text/javascript")
+
+
+STAY_ENERGY_SCRIPT = "const energy = document.querySelector(\"#stay-energy\");\nconst values = Array.from(energy.querySelectorAll(\"[data-energy-value]\"));\nconst dates = energy.querySelector(\"[data-energy-dates]\");\nconst formatter = new Intl.NumberFormat(document.documentElement.lang, {\n    minimumFractionDigits: 2, maximumFractionDigits: 2\n});\nlet loading = false;\nfunction render(data) {\n    values.forEach(card => {\n        const value = data[card.dataset.energyValue];\n        card.textContent = typeof value === \"number\" && Number.isFinite(value)\n            ? formatter.format(value) + \" kWh\" : energy.dataset.unavailable;\n    });\n    const validDate = value => typeof value === \"string\" && /^\\d{4}-\\d{2}-\\d{2}$/.test(value);\n    dates.textContent = validDate(data.start_date) && validDate(data.end_date) && Number.isInteger(data.days)\n        ? data.start_date.split(\"-\").reverse().join(\"/\") + \" – \"\n            + data.end_date.split(\"-\").reverse().join(\"/\") + \" · \" + data.days + \" \" + energy.dataset.days\n        : energy.dataset.noDates;\n}\nasync function refreshEnergy() {\n    if (loading || document.hidden) return;\n    loading = true;\n    try {\n        const response = await fetch(\"/api/stay-energy\", {cache: \"no-store\", credentials: \"same-origin\"});\n        if (response.status === 401 || response.status === 403) {\n            render({});\n            window.location.replace(\"/\");\n            return;\n        }\n        if (!response.ok) throw new Error(\"Energy unavailable\");\n        const data = await response.json();\n        if (!data || typeof data !== \"object\" || Array.isArray(data)) throw new Error(\"Invalid energy\");\n        render(data);\n    } catch {\n        render({});\n    } finally {\n        loading = false;\n    }\n}\nsetInterval(refreshEnergy, 60000);\ndocument.addEventListener(\"visibilitychange\", () => {\n    if (!document.hidden) refreshEnergy();\n});\n"
+
+
 async def home(request):
     lang = language(request)
     t = LABELS[lang]
     intro = '<p>The Panoramic Penthouse · Las Colinas</p>'
     item = get_session(request)
     if item is not None:
-        temperatures = await zone_temperatures(request)
+        temperatures, energy = await asyncio.gather(
+            zone_temperatures(request), cached_stay_energy(request)
+        )
         if stay_expired(request):
             return expired_response(request)
         if get_session(request) is not item:
@@ -941,6 +1117,7 @@ async def home(request):
               <div class="zones-grid">{zones_html}</div>
             </section>
             <script src="/zones.js" defer></script>
+            {energy_section(energy, lang)}
             {contact}
             <form method="post" action="/logout">
               <input type="hidden" name="csrf" value="{csrf}">
@@ -1140,7 +1317,7 @@ async def admin_home(request):
 
     return page(
         "Administration",
-        "<p>Le portail 0.6.5 est démarré.</p>"
+        "<p>Le portail 0.6.6 est démarré.</p>"
         "<p>Cette page ne connecte pas le locataire.</p>"
         "<p>Ouvrez directement l’adresse HTTPS configurée "
         "pour tester la connexion locataire.</p>"
@@ -1190,6 +1367,8 @@ async def main():
     )
     public["public"] = True
     public["settings"] = settings
+    public["energy_lock"] = asyncio.Lock()
+    public["energy_cache"] = {"data": {}, "refresh_at": 0}
     public["zones_lock"] = asyncio.Lock()
     public["zones_cache"] = {"values": [None] * 4, "refresh_at": 0}
     public["outdoor_lock"] = asyncio.Lock()
@@ -1200,6 +1379,8 @@ async def main():
     public.router.add_get("/", home)
     public.router.add_get("/toggle-code.js", toggle_script)
     public.router.add_get("/floor-plan.png", floor_plan)
+    public.router.add_get("/api/stay-energy", stay_energy_api)
+    public.router.add_get("/stay-energy.js", stay_energy_script)
     public.router.add_get("/zones.js", zones_script)
     public.router.add_get("/api/zones", zones_api)
     public.router.add_get("/welcome.js", welcome_script)
@@ -1239,7 +1420,7 @@ async def main():
         watcher = asyncio.create_task(watch_certificate(tls))
 
         print(
-            "Portail 0.6.5 démarré : "
+            "Portail 0.6.6 démarré : "
             "Ingress 8099, HTTPS 8443, guide de séjour.",
             flush=True,
         )

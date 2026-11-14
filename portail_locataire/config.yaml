@@ -1,6 +1,6 @@
 name: Portail locataire
 description: Portail HTTPS sécurisé avec puissance et énergie en lecture seule
-version: "0.6.5"
+version: "0.6.6"
 slug: portail_locataire
 
 arch:
@@ -45,6 +45,11 @@ options:
   zone3_entity: climate.termostatoz3
   zone4_entity: climate.termostatoz4
 
+  daily_energy_entity: sensor.shelly_shelly_em_5e1505_2_consommation_shelly_journaliere
+  stay_energy_entity: sensor.shelly_shelly_em_5e1505_2_conso_sejour_locataire_hinojo45
+  stay_calendar_entity: calendar.location_hinojo45
+  rental_status_entity: input_select.statut_location
+
 schema:
   portal_url: str
   guest_code: password
@@ -60,3 +65,7 @@ schema:
   zone2_entity: str
   zone3_entity: str
   zone4_entity: str
+  daily_energy_entity: str
+  stay_energy_entity: str
+  stay_calendar_entity: str
+  rental_status_entity: str
