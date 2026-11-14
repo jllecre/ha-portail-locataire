@@ -12,6 +12,7 @@ import re
 
 from collections import deque
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
@@ -139,6 +140,17 @@ def load_settings():
     if not isinstance(outdoor_entity, str) or not re.fullmatch(r"sensor\.[a-z0-9_]+", outdoor_entity):
         raise ValueError("outdoor_temperature_entity doit être un identifiant sensor valide.")
 
+    zone_entities = [
+        options.get(f"zone{number}_entity", f"climate.termostatoz{number}")
+        for number in range(1, 5)
+    ]
+    if any(
+        not isinstance(entity, str)
+        or not re.fullmatch(r"climate\.[a-z0-9_]+", entity)
+        for entity in zone_entities
+    ):
+        raise ValueError("Les entités de zone doivent être des identifiants climate valides.")
+
     phone = options.get("contact_phone", "").strip()
     if phone and not re.fullmatch(r"\+[1-9][0-9]{6,14}", phone):
         raise ValueError("contact_phone doit être au format international.")
@@ -149,6 +161,7 @@ def load_settings():
         "door_code": options.get("door_code", ""),
         "contact_phone": phone,
         "guest_name": guest_name,
+        "zone_entities": zone_entities,
         "address": address,
         "origin": origin,
         "code_hash": hashlib.sha256(code.encode("utf-8")).digest(),
@@ -164,6 +177,7 @@ def load_settings():
 
 LABELS = {
     "fr": {
+        "plan": "Plan des zones — toucher pour agrandir",
         "welcome": "Bienvenue",
         "code": "Code du séjour",
         "login": "Se connecter",
@@ -175,9 +189,13 @@ LABELS = {
         "temp": "Température intérieure",
         "unavailable": "Indisponible",
         "contact": "Contacter Jean Luc",
-        "logout": "Se déconnecter"
+        "logout": "Se déconnecter",
+        "zones": "Températures par zone",
+        "zone": "Zone",
+        "soon": "Prochainement"
     },
     "en": {
+        "plan": "Zone plan — tap to enlarge",
         "welcome": "Welcome",
         "code": "Stay code",
         "login": "Sign in",
@@ -189,9 +207,13 @@ LABELS = {
         "temp": "Indoor temperature",
         "unavailable": "Unavailable",
         "contact": "Contact Jean Luc",
-        "logout": "Sign out"
+        "logout": "Sign out",
+        "zones": "Zone temperatures",
+        "zone": "Zone",
+        "soon": "Coming soon"
     },
     "nl": {
+        "plan": "Zoneplan — tik om te vergroten",
         "welcome": "Welkom",
         "code": "Verblijfscode",
         "login": "Inloggen",
@@ -203,9 +225,13 @@ LABELS = {
         "temp": "Binnentemperatuur",
         "unavailable": "Niet beschikbaar",
         "contact": "Contact met Jean Luc",
-        "logout": "Uitloggen"
+        "logout": "Uitloggen",
+        "zones": "Temperaturen per zone",
+        "zone": "Zone",
+        "soon": "Binnenkort"
     },
     "es": {
+        "plan": "Plano de zonas — toca para ampliar",
         "welcome": "Bienvenido",
         "code": "Código de estancia",
         "login": "Entrar",
@@ -217,7 +243,10 @@ LABELS = {
         "temp": "Temperatura interior",
         "unavailable": "No disponible",
         "contact": "Contactar con Jean Luc",
-        "logout": "Cerrar sesión"
+        "logout": "Cerrar sesión",
+        "zones": "Temperaturas por zona",
+        "zone": "Zona",
+        "soon": "Próximamente"
     }
 }
 ACCESS_ERRORS = {
@@ -322,7 +351,23 @@ def page(title, content, status=200, lang="fr"):
     }}
     section {{ border-top: 1px solid #8aa6ac; margin-top: 20px; }}
     summary {{ cursor: pointer; }}
-    .temperature {{ font-size: 2rem; font-weight: bold; }}
+    .temperature {{ font-size: 1.6rem; font-weight: bold; }}
+    .floor-plan {{ width: 100%; height: auto; border-radius: 8px; background: white; }}
+    .zones-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }}
+    .zone-card {{
+      padding: 14px;
+      border: 1px solid #8aa6ac;
+      border-radius: 12px;
+      overflow-wrap: anywhere;
+    }}
+    .zone-card h3 {{ margin: 0; }}
+    @media (max-width: 360px) {{
+      .zones-grid {{ grid-template-columns: 1fr; }}
+    }}
     p {{ line-height: 1.5; }}
   </style>
 </head>
@@ -403,7 +448,7 @@ async def security_headers(request, response):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Content-Security-Policy"] = (
             "default-src 'none'; "
-            "style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; "
+            "style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self'; "
             "form-action 'self'; "
             "frame-ancestors 'none'; "
             "base-uri 'none'"
@@ -767,13 +812,85 @@ async def welcome_api(request):
 WELCOME_SCRIPT = "const clock = document.querySelector(\"#welcome-time\");\nconst temperature = document.querySelector(\"#welcome-temperature\");\nconst formatter = new Intl.DateTimeFormat(\"es-ES\", {\n    timeZone: \"Europe/Madrid\",\n    hour: \"2-digit\",\n    minute: \"2-digit\",\n    hourCycle: \"h23\"\n});\nconst unavailable = \"Temperatura exterior no disponible\";\nlet loading = false;\n\nfunction updateClock() {\n    clock.textContent = \" Son las \" + formatter.format(new Date());\n}\n\nasync function updateTemperature() {\n    if (loading || document.hidden) return;\n    loading = true;\n    try {\n        const response = await fetch(\"/api/welcome\", {\n            cache: \"no-store\",\n            credentials: \"same-origin\"\n        });\n        if (!response.ok) throw new Error(\"Temperature unavailable\");\n        const data = await response.json();\n        const value = data.temperature_c;\n        temperature.textContent = typeof value === \"number\" && Number.isFinite(value)\n            ? new Intl.NumberFormat(\"es-ES\", {\n                minimumFractionDigits: 1,\n                maximumFractionDigits: 1\n              }).format(value) + \" °C\"\n            : unavailable;\n    } catch {\n        temperature.textContent = unavailable;\n    } finally {\n        loading = false;\n    }\n}\n\nupdateClock();\nupdateTemperature();\nsetInterval(updateClock, 15000);\nsetInterval(updateTemperature, 60000);\ndocument.addEventListener(\"visibilitychange\", () => {\n    if (!document.hidden) {\n        updateClock();\n        updateTemperature();\n    }\n});\n"
 
 
+async def read_zone_temperatures(request):
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    if not token:
+        return [None] * 4
+
+    async def read_json(path):
+        try:
+            async with request.app["ha_client"].get(
+                "http://supervisor/core/api/" + path,
+                headers={"Authorization": f"Bearer {token}"},
+                allow_redirects=False,
+                timeout=ClientTimeout(total=5),
+            ) as response:
+                if response.status != 200:
+                    return {}
+                data = await response.json()
+            return data if isinstance(data, dict) else {}
+        except (ClientError, asyncio.TimeoutError, ValueError, TypeError):
+            return {}
+
+    paths = ["config"] + [
+        "states/" + entity for entity in request.app["settings"]["zone_entities"]
+    ]
+    config, *states = await asyncio.gather(*(read_json(path) for path in paths))
+    units = config.get("unit_system", {})
+    unit = units.get("temperature") if isinstance(units, dict) else None
+    temperatures = []
+    for state in states:
+        attributes = state.get("attributes", {})
+        value = finite_number(attributes.get("current_temperature")) if isinstance(attributes, dict) else None
+        if unit not in ("°C", "°F"):
+            value = None
+        if value is not None and unit == "°F":
+            value = finite_number((value - 32) * 5 / 9)
+        temperatures.append(value)
+    return temperatures
+
+
+async def zone_temperatures(request):
+    async with request.app["zones_lock"]:
+        cache = request.app["zones_cache"]
+        if time.monotonic() >= cache["refresh_at"]:
+            cache["values"] = await read_zone_temperatures(request)
+            cache["refresh_at"] = time.monotonic() + 60
+        return list(cache["values"])
+
+
+async def zones_api(request):
+    item = get_session(request)
+    if item is None:
+        return web.json_response({"error": "authentication_required"}, status=401)
+    temperatures = await zone_temperatures(request)
+    if stay_expired(request):
+        return expired_response(request)
+    if get_session(request) is not item:
+        return web.json_response({"error": "authentication_required"}, status=401)
+    return web.json_response({"temperatures_c": temperatures})
+
+
+async def floor_plan(request):
+    if get_session(request) is None:
+        return web.Response(status=401)
+    return web.FileResponse(Path(__file__).with_name("floor-plan.png"))
+
+
+async def zones_script(request):
+    return web.Response(text=ZONES_SCRIPT, content_type="text/javascript")
+
+
+ZONES_SCRIPT = "const container = document.querySelector(\"#zones\");\nconst cards = Array.from(container.querySelectorAll(\"[data-zone-value]\"));\nconst formatter = new Intl.NumberFormat(document.documentElement.lang, {\n    minimumFractionDigits: 1, maximumFractionDigits: 1\n});\nlet loading = false;\nfunction render(values) {\n    cards.forEach((card, index) => {\n        const value = values[index];\n        card.textContent = typeof value === \"number\" && Number.isFinite(value)\n            ? formatter.format(value) + \" °C\" : container.dataset.unavailable;\n    });\n}\nasync function refreshZones() {\n    if (loading || document.hidden) return;\n    loading = true;\n    try {\n        const response = await fetch(\"/api/zones\", {cache: \"no-store\", credentials: \"same-origin\"});\n        if (response.status === 401 || response.status === 403) {\n            render([]);\n            window.location.replace(\"/\");\n            return;\n        }\n        if (!response.ok) throw new Error(\"Zones unavailable\");\n        const data = await response.json();\n        if (!Array.isArray(data.temperatures_c)) throw new Error(\"Invalid zones\");\n        render(data.temperatures_c);\n    } catch {\n        render([]);\n    } finally {\n        loading = false;\n    }\n}\nsetInterval(refreshZones, 60000);\ndocument.addEventListener(\"visibilitychange\", () => {\n    if (!document.hidden) refreshZones();\n});\n"
+
+
 async def home(request):
     lang = language(request)
     t = LABELS[lang]
     intro = '<p>The Panoramic Penthouse · Las Colinas</p>'
     item = get_session(request)
     if item is not None:
-        temperature = await read_temperature(request)
+        temperatures = await zone_temperatures(request)
         if stay_expired(request):
             return expired_response(request)
         if get_session(request) is not item:
@@ -781,9 +898,20 @@ async def home(request):
 
         settings = request.app["settings"]
         csrf = html.escape(item["csrf"], quote=True)
-        temp = t["unavailable"] if temperature is None else f"{temperature:.1f} °C"
-        if temperature is not None and lang != "en":
-            temp = temp.replace(".", ",")
+        zone_cards = []
+        for number, value in enumerate(temperatures, start=1):
+            text = t["unavailable"] if value is None else f"{value:.1f} °C"
+            if value is not None and lang != "en":
+                text = text.replace(".", ",")
+            zone_cards.append(
+                f'<article class="zone-card"><h3>{t["zone"]} Z{number}</h3>'
+                f'<p class="temperature" data-zone-value>{text}</p></article>'
+            )
+        zone_cards.append(
+            f'<article class="zone-card"><h3>{t["zone"]} Z5</h3>'
+            f'<p>{t["soon"]}</p></article>'
+        )
+        zones_html = "".join(zone_cards)
         door_code = html.escape(settings["door_code"])
         door = (
             f'<details><summary>{t["reveal"]}</summary><p>{door_code}</p><p>{t["door_help"]}</p></details>'
@@ -804,7 +932,15 @@ async def home(request):
             f"""
             {intro}
             <section><h2>{t["door"]}</h2>{door}</section>
-            <section><h2>{t["temp"]}</h2><p class="temperature">{temp}</p></section>
+            <section id="zones" data-unavailable="{t['unavailable']}">
+              <h2>{t["zones"]}</h2>
+              <a href="/floor-plan.png" target="_blank" rel="noopener">
+                <img class="floor-plan" src="/floor-plan.png" alt="{t['plan']}" width="533" height="332">
+              </a>
+              <p>{t["plan"]}</p>
+              <div class="zones-grid">{zones_html}</div>
+            </section>
+            <script src="/zones.js" defer></script>
             {contact}
             <form method="post" action="/logout">
               <input type="hidden" name="csrf" value="{csrf}">
@@ -1004,7 +1140,7 @@ async def admin_home(request):
 
     return page(
         "Administration",
-        "<p>Le portail 0.6.4 est démarré.</p>"
+        "<p>Le portail 0.6.5 est démarré.</p>"
         "<p>Cette page ne connecte pas le locataire.</p>"
         "<p>Ouvrez directement l’adresse HTTPS configurée "
         "pour tester la connexion locataire.</p>"
@@ -1054,6 +1190,8 @@ async def main():
     )
     public["public"] = True
     public["settings"] = settings
+    public["zones_lock"] = asyncio.Lock()
+    public["zones_cache"] = {"values": [None] * 4, "refresh_at": 0}
     public["outdoor_lock"] = asyncio.Lock()
     public["outdoor_cache"] = {"value": None, "refresh_at": 0}
     public.cleanup_ctx.append(ha_client_context)
@@ -1061,6 +1199,9 @@ async def main():
 
     public.router.add_get("/", home)
     public.router.add_get("/toggle-code.js", toggle_script)
+    public.router.add_get("/floor-plan.png", floor_plan)
+    public.router.add_get("/zones.js", zones_script)
+    public.router.add_get("/api/zones", zones_api)
     public.router.add_get("/welcome.js", welcome_script)
     public.router.add_get("/api/welcome", welcome_api)
     public.router.add_post("/login", login)
@@ -1098,7 +1239,7 @@ async def main():
         watcher = asyncio.create_task(watch_certificate(tls))
 
         print(
-            "Portail 0.6.4 démarré : "
+            "Portail 0.6.5 démarré : "
             "Ingress 8099, HTTPS 8443, guide de séjour.",
             flush=True,
         )
