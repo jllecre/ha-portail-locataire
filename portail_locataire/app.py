@@ -212,7 +212,16 @@ LABELS = {
         "energy_excess": "Dépassement du quota",
         "days": "jours",
         "energy_note": "Le quota de 20 kWh par jour est calculé sur l’ensemble du séjour. Le compteur du séjour est remis à zéro par votre hôte à l’arrivée.",
-        "energy_no_dates": "Dates du séjour indisponibles"
+        "energy_no_dates": "Dates du séjour indisponibles",
+        "favorites": "Nos coups de cœur",
+        "favorite_food": "Restaurants & bonnes tables",
+        "favorite_places": "Villages & découvertes",
+        "favorite_activities": "Activités & aventures",
+        "favorite_walks": "Balades & randonnées",
+        "favorite_note": "Guides Airbnb · ouverture dans un nouvel onglet",
+        "new_tab": "S’ouvre dans un nouvel onglet",
+        "arrival": "Arrivée",
+        "departure": "Départ"
     },
     "en": {
         "plan": "Zone plan — tap to enlarge",
@@ -238,7 +247,16 @@ LABELS = {
         "energy_excess": "Above the allowance",
         "days": "days",
         "energy_note": "The allowance of 20 kWh per day applies to the whole stay. Your host resets the stay meter on arrival.",
-        "energy_no_dates": "Stay dates unavailable"
+        "energy_no_dates": "Stay dates unavailable",
+        "favorites": "Our favourites",
+        "favorite_food": "Restaurants & good food",
+        "favorite_places": "Villages & discoveries",
+        "favorite_activities": "Activities & adventures",
+        "favorite_walks": "Walks & hikes",
+        "favorite_note": "Airbnb guides · open in a new tab",
+        "new_tab": "Opens in a new tab",
+        "arrival": "Arrival",
+        "departure": "Departure"
     },
     "nl": {
         "plan": "Zoneplan — tik om te vergroten",
@@ -264,7 +282,16 @@ LABELS = {
         "energy_excess": "Boven de inbegrepen hoeveelheid",
         "days": "dagen",
         "energy_note": "De inbegrepen hoeveelheid van 20 kWh per dag geldt voor het hele verblijf. Je gastheer zet de verblijfsteller bij aankomst op nul.",
-        "energy_no_dates": "Verblijfsdatums niet beschikbaar"
+        "energy_no_dates": "Verblijfsdatums niet beschikbaar",
+        "favorites": "Onze favorieten",
+        "favorite_food": "Restaurants & lekker eten",
+        "favorite_places": "Dorpen & ontdekkingen",
+        "favorite_activities": "Activiteiten & avonturen",
+        "favorite_walks": "Wandelingen & trektochten",
+        "favorite_note": "Airbnb-gidsen · openen in een nieuw tabblad",
+        "new_tab": "Opent in een nieuw tabblad",
+        "arrival": "Aankomst",
+        "departure": "Vertrek"
     },
     "es": {
         "plan": "Plano de zonas — toca para ampliar",
@@ -290,7 +317,16 @@ LABELS = {
         "energy_excess": "Exceso sobre lo incluido",
         "days": "días",
         "energy_note": "Los 20 kWh diarios incluidos se calculan para toda la estancia. Tu anfitrión pone el contador de la estancia a cero a la llegada.",
-        "energy_no_dates": "Fechas de estancia no disponibles"
+        "energy_no_dates": "Fechas de estancia no disponibles",
+        "favorites": "Nuestros favoritos",
+        "favorite_food": "Restaurantes & buena mesa",
+        "favorite_places": "Pueblos & descubrimientos",
+        "favorite_activities": "Actividades & aventuras",
+        "favorite_walks": "Paseos & senderismo",
+        "favorite_note": "Guías de Airbnb · se abren en una pestaña nueva",
+        "new_tab": "Se abre en una pestaña nueva",
+        "arrival": "Llegada",
+        "departure": "Salida"
     }
 }
 ACCESS_ERRORS = {
@@ -411,6 +447,41 @@ def page(title, content, status=200, lang="fr"):
     .zone-card h3 {{ margin: 0; }}
     @media (max-width: 360px) {{
       .zones-grid {{ grid-template-columns: 1fr; }}
+    }}
+    .favorites > summary {{
+      font-size: 1.15rem;
+      font-weight: bold;
+      padding-left: 0;
+      min-height: 44px;
+      box-sizing: border-box;
+    }}
+    .favorites-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 8px;
+    }}
+    .favorite-link {{
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 14px 10px;
+      min-height: 88px;
+      box-sizing: border-box;
+      text-align: center;
+      text-decoration: none;
+      border: 1px solid #8aa6ac;
+      border-radius: 10px;
+      overflow-wrap: anywhere;
+      line-height: 1.4;
+    }}
+    .favorite-link:hover {{ background: #244851; }}
+    .favorite-link > span:first-child {{ font-size: 1.5rem; }}
+    .small-note {{ font-size: .875rem; color: #cddde0; }}
+    @media (max-width: 360px) {{
+      .favorites-grid {{ grid-template-columns: 1fr; }}
     }}
     p {{ line-height: 1.5; }}
   </style>
@@ -1022,6 +1093,33 @@ async def stay_energy_api(request):
     return web.json_response(data)
 
 
+def favorites_section(lang):
+    t = LABELS[lang]
+    guides = (
+        ("🍽️", "favorite_food", "4605072"),
+        ("🏘️", "favorite_places", "4603292"),
+        ("🎯", "favorite_activities", "4613484"),
+        ("🥾", "favorite_walks", "4631901"),
+    )
+    links = []
+    for icon, key, guide_id in guides:
+        url = "https://www.airbnb.fr/s/guidebooks?refinement_paths%5B%5D=/guidebooks/" + guide_id
+        label = html.escape(t[key])
+        description = html.escape(t["new_tab"], quote=True)
+        links.append(
+            f'<a class="favorite-link" href="{url}" target="_blank" rel="noopener noreferrer"'
+            f' aria-label="{label} — {description}">'
+            f'<span aria-hidden="true">{icon}</span><span>{label}</span></a>'
+        )
+    return (
+        '<section id="favorites"><details class="favorites">'
+        f'<summary><span aria-hidden="true">♡</span> {html.escape(t["favorites"])}</summary>'
+        f'<div class="favorites-grid">{"".join(links)}</div>'
+        f'<p class="small-note">{html.escape(t["favorite_note"])}</p>'
+        '</details></section>'
+    )
+
+
 def energy_section(data, lang):
     t = LABELS[lang]
     cards = []
@@ -1041,11 +1139,12 @@ def energy_section(data, lang):
     if data["days"] is not None:
         start = datetime.fromisoformat(data["start_date"]).strftime("%d/%m/%Y")
         end = datetime.fromisoformat(data["end_date"]).strftime("%d/%m/%Y")
-        dates = f'{start} – {end} · {data["days"]} {t["days"]}'
+        dates = f'{t["arrival"]} : {start} · {t["departure"]} : {end} · {data["days"]} {t["days"]}'
     return (
         f'<section id="stay-energy" data-unavailable="{t["unavailable"]}"'
-        f' data-no-dates="{t["energy_no_dates"]}" data-days="{t["days"]}">'
-        f'<h2>{t["energy"]}</h2><p data-energy-dates>{dates}</p>'
+        f' data-no-dates="{t["energy_no_dates"]}" data-days="{t["days"]}"'
+        f' data-arrival="{t["arrival"]}" data-departure="{t["departure"]}">'
+        f'<h2>{t["energy"]}</h2><p class="small-note" data-energy-dates>{dates}</p>'
         f'<div class="zones-grid">{"".join(cards)}</div><p>{t["energy_note"]}</p>'
         '</section><script src="/stay-energy.js" defer></script>'
     )
@@ -1055,7 +1154,7 @@ async def stay_energy_script(request):
     return web.Response(text=STAY_ENERGY_SCRIPT, content_type="text/javascript")
 
 
-STAY_ENERGY_SCRIPT = "const energy = document.querySelector(\"#stay-energy\");\nconst values = Array.from(energy.querySelectorAll(\"[data-energy-value]\"));\nconst dates = energy.querySelector(\"[data-energy-dates]\");\nconst formatter = new Intl.NumberFormat(document.documentElement.lang, {\n    minimumFractionDigits: 2, maximumFractionDigits: 2\n});\nlet loading = false;\nfunction render(data) {\n    values.forEach(card => {\n        const value = data[card.dataset.energyValue];\n        card.textContent = typeof value === \"number\" && Number.isFinite(value)\n            ? formatter.format(value) + \" kWh\" : energy.dataset.unavailable;\n    });\n    const validDate = value => typeof value === \"string\" && /^\\d{4}-\\d{2}-\\d{2}$/.test(value);\n    dates.textContent = validDate(data.start_date) && validDate(data.end_date) && Number.isInteger(data.days)\n        ? data.start_date.split(\"-\").reverse().join(\"/\") + \" – \"\n            + data.end_date.split(\"-\").reverse().join(\"/\") + \" · \" + data.days + \" \" + energy.dataset.days\n        : energy.dataset.noDates;\n}\nasync function refreshEnergy() {\n    if (loading || document.hidden) return;\n    loading = true;\n    try {\n        const response = await fetch(\"/api/stay-energy\", {cache: \"no-store\", credentials: \"same-origin\"});\n        if (response.status === 401 || response.status === 403) {\n            render({});\n            window.location.replace(\"/\");\n            return;\n        }\n        if (!response.ok) throw new Error(\"Energy unavailable\");\n        const data = await response.json();\n        if (!data || typeof data !== \"object\" || Array.isArray(data)) throw new Error(\"Invalid energy\");\n        render(data);\n    } catch {\n        render({});\n    } finally {\n        loading = false;\n    }\n}\nsetInterval(refreshEnergy, 60000);\ndocument.addEventListener(\"visibilitychange\", () => {\n    if (!document.hidden) refreshEnergy();\n});\n"
+STAY_ENERGY_SCRIPT = "const energy = document.querySelector(\"#stay-energy\");\nconst values = Array.from(energy.querySelectorAll(\"[data-energy-value]\"));\nconst dates = energy.querySelector(\"[data-energy-dates]\");\nconst formatter = new Intl.NumberFormat(document.documentElement.lang, {\n    minimumFractionDigits: 2, maximumFractionDigits: 2\n});\nlet loading = false;\nfunction render(data) {\n    values.forEach(card => {\n        const value = data[card.dataset.energyValue];\n        card.textContent = typeof value === \"number\" && Number.isFinite(value)\n            ? formatter.format(value) + \" kWh\" : energy.dataset.unavailable;\n    });\n    const validDate = value => typeof value === \"string\" && /^\\d{4}-\\d{2}-\\d{2}$/.test(value);\n    dates.textContent = validDate(data.start_date) && validDate(data.end_date) && Number.isInteger(data.days)\n        ? energy.dataset.arrival + \" : \" + data.start_date.split(\"-\").reverse().join(\"/\") + \" · \"\n            + energy.dataset.departure + \" : \" + data.end_date.split(\"-\").reverse().join(\"/\")\n            + \" · \" + data.days + \" \" + energy.dataset.days\n        : energy.dataset.noDates;\n}\nasync function refreshEnergy() {\n    if (loading || document.hidden) return;\n    loading = true;\n    try {\n        const response = await fetch(\"/api/stay-energy\", {cache: \"no-store\", credentials: \"same-origin\"});\n        if (response.status === 401 || response.status === 403) {\n            render({});\n            window.location.replace(\"/\");\n            return;\n        }\n        if (!response.ok) throw new Error(\"Energy unavailable\");\n        const data = await response.json();\n        if (!data || typeof data !== \"object\" || Array.isArray(data)) throw new Error(\"Invalid energy\");\n        render(data);\n    } catch {\n        render({});\n    } finally {\n        loading = false;\n    }\n}\nsetInterval(refreshEnergy, 60000);\ndocument.addEventListener(\"visibilitychange\", () => {\n    if (!document.hidden) refreshEnergy();\n});\n"
 
 
 async def home(request):
@@ -1117,8 +1216,9 @@ async def home(request):
               <div class="zones-grid">{zones_html}</div>
             </section>
             <script src="/zones.js" defer></script>
-            {energy_section(energy, lang)}
+            {favorites_section(lang)}
             {contact}
+            {energy_section(energy, lang)}
             <form method="post" action="/logout">
               <input type="hidden" name="csrf" value="{csrf}">
               <button type="submit">{t["logout"]}</button>
@@ -1317,7 +1417,7 @@ async def admin_home(request):
 
     return page(
         "Administration",
-        "<p>Le portail 0.6.6 est démarré.</p>"
+        "<p>Le portail 0.6.7 est démarré.</p>"
         "<p>Cette page ne connecte pas le locataire.</p>"
         "<p>Ouvrez directement l’adresse HTTPS configurée "
         "pour tester la connexion locataire.</p>"
@@ -1420,7 +1520,7 @@ async def main():
         watcher = asyncio.create_task(watch_certificate(tls))
 
         print(
-            "Portail 0.6.6 démarré : "
+            "Portail 0.6.7 démarré : "
             "Ingress 8099, HTTPS 8443, guide de séjour.",
             flush=True,
         )
