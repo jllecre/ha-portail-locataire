@@ -1,32 +1,32 @@
-# Version 0.7.0 - chauffage au sol
+# Version 0.7.0 — chauffage au sol
 
 ## Installation sur HA APPART
 
 1. Sauvegarder la configuration actuelle du portail.
-2. Actualiser le magasin d'applications puis mettre � jour le portail existant vers 0.7.0. Le d�p�t et la branche restent identiques.
-3. Dans la configuration, activer `floor_heating_enabled: true` puis red�marrer le portail.
-4. Conserver les entit�s Z1 � Z4 et laisser `zone5_entity: ""` tant que Z5 n'est pas install�e. Une fois install�e, renseigner son identifiant climate exact.
-5. Tester une seule zone avec un code de s�jour valide, en mode propri�taire Arriv�e. Comparer la consigne affich�e dans HA avant/apr�s une petite modification, puis r�tablir la valeur souhait�e.
+2. Actualiser le magasin d'applications puis mettre à jour le portail existant vers 0.7.0. Le dépôt et la branche restent identiques.
+3. Dans la configuration, activer `floor_heating_enabled: true` puis redémarrer le portail.
+4. Conserver les entités Z1 à Z4 et laisser `zone5_entity: ""` tant que Z5 n'est pas installée. Une fois installée, renseigner son identifiant climate exact.
+5. Tester une seule zone avec un code de séjour valide, en mode propriétaire Arrivée. Comparer la consigne affichée dans HA avant/après une petite modification, puis rétablir la valeur souhaitée.
 
 Le port HTTPS, Cloudflare et les jetons ne changent pas.
 
 ## Comportement
 
-- Les temp�ratures actuelles restent visibles toute l'ann�e.
-- Les consignes du plancher sont accessibles du 1er octobre au 30 avril inclus, selon Europe/Madrid, uniquement en mode Arriv�e.
-- Chaque zone pr�sente la consigne HA, les boutons - et + et un bouton Appliquer.
-- Les bornes et le pas proviennent du thermostat HA (pas de repli 0,5 �C si absent). Un thermostat indisponible, arr�t� ou d�pourvu des attributs n�cessaires n'est pas commandable.
-- L'�tat MQTT `unknown` n'emp�che pas le r�glage si les attributs du thermostat sont valides. Le probl�me de mode MQTT doit �tre trait� s�par�ment.
-- Le serveur contr�le la session, le code CSRF, la saison, le statut de location, l'identifiant de zone et la temp�rature. Une seconde commande sur la m�me zone est limit�e pendant trois secondes.
-- Le seul service expos� est `climate.set_temperature`, sur les entit�s configur�es. Aucun changement de mode, marche/arr�t de chaudi�re ou reset de compteur.
-- � Demande transmise � signifie que HA a accept� le service. � Consigne confirm�e � indique que HA a ensuite renvoy� la valeur demand�e ; cela ne prouve pas la temp�rature effective du logement.
-- Les textes sont disponibles en FR, EN, NL et ES. Les r�glages se r�actualisent toutes les quinze secondes hors saisie en cours.
-- L'option est d�sactiv�e par d�faut. En �t�, un message remplace les commandes du plancher ; aucune commande de climatisation n'est encore impl�ment�e.
+- Les températures actuelles restent visibles toute l'année.
+- Les consignes du plancher sont accessibles du 1er octobre au 30 avril inclus, selon Europe/Madrid, uniquement en mode Arrivée.
+- Chaque zone présente la consigne HA, les boutons − et + et un bouton Appliquer.
+- Les bornes et le pas proviennent du thermostat HA (pas de repli 0,5 °C si absent). Un thermostat indisponible, arrêté ou dépourvu des attributs nécessaires n'est pas commandable.
+- L'état MQTT `unknown` n'empêche pas le réglage si les attributs du thermostat sont valides. Le problème de mode MQTT doit être traité séparément.
+- Le serveur contrôle la session, le code CSRF, la saison, le statut de location, l'identifiant de zone et la température. Une seconde commande sur la même zone est limitée pendant trois secondes.
+- Le seul service exposé est `climate.set_temperature`, sur les entités configurées. Aucun changement de mode, marche/arrêt de chaudière ou reset de compteur.
+- « Demande transmise » signifie que HA a accepté le service. « Consigne confirmée » indique que HA a ensuite renvoyé la valeur demandée ; cela ne prouve pas la température effective du logement.
+- Les textes sont disponibles en FR, EN, NL et ES. Les réglages se réactualisent toutes les quinze secondes hors saisie en cours.
+- L'option est désactivée par défaut. En été, un message remplace les commandes du plancher ; aucune commande de climatisation n'est encore implémentée.
 
-## �tape climatisation
+## Étape climatisation
 
-Pr�voir les m�mes cartes de zones de mai � septembre avec marche/arr�t et consigne, une fois connus les identifiants climate, les modes r�ellement support�s et la correspondance des zones. Si la climatisation est uniquement disponible via une application distincte, pr�voir plut�t un lien vers cette application. Ne pas exposer de commande g�n�rique ou de jeton HA au navigateur.
+Prévoir les mêmes cartes de zones de mai à septembre avec marche/arrêt et consigne, une fois connus les identifiants climate, les modes réellement supportés et la correspondance des zones. Si la climatisation est uniquement disponible via une application distincte, prévoir plutôt un lien vers cette application. Ne pas exposer de commande générique ou de jeton HA au navigateur.
 
-## Validation de d�veloppement
+## Validation de développement
 
-Tests automatis�s avec client aiohttp local et API HA simul�e : authentification, CSRF, saison et fronti�res horaires Madrid, mode Arriv�e, limites/pas, zone absente, r�vocation de session pendant une lecture, �chec HA, limitation des r�p�titions et traductions. Aucun appareil r�el n'a �t� actionn� pendant le d�veloppement. La validation mat�rielle reste � effectuer sur HA APPART.
+Tests automatisés avec client aiohttp local et API HA simulée : authentification, CSRF, saison et frontières horaires Madrid, mode Arrivée, limites/pas, zone absente, révocation de session pendant une lecture, échec HA, limitation des répétitions et traductions. Aucun appareil réel n'a été actionné pendant le développement. La validation matérielle reste à effectuer sur HA APPART.

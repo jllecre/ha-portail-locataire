@@ -1,6 +1,6 @@
 name: Portail locataire
 description: Guide de séjour et consignes de chauffage au sol saisonnières
-version: "0.7.0"
+version: "0.7.1"
 slug: portail_locataire
 
 arch:

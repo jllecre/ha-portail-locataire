@@ -32,13 +32,13 @@ class Reply:
 class HA:
     def __init__(self):
         self.calls = []
-        self.rental = "Arriv�e"
+        self.rental = "Arriv\u00e9e"
         self.state = copy.deepcopy(STATE)
         self.status = 200
         self.after_read = None
     def get(self, url, **kwargs):
         if url.endswith("/config"):
-            data = {"unit_system": {"temperature": "�C"}}
+            data = {"unit_system": {"temperature": "\u00b0C"}}
         elif "input_select" in url:
             data = {"state": self.rental}
         else:
@@ -97,9 +97,9 @@ class HeatingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.post()).status, 403)
         self.assertEqual(self.ha.calls, [])
     async def test_departure_and_maintenance(self):
-        for mode in ("D�part", "Entretien"):
+        for mode in ("D\u00e9part", "Entretien"):
             self.ha.rental = mode
-            self.assertEqual((await self.post(zone="1" if mode == "D�part" else "2")).status, 409)
+            self.assertEqual((await self.post(zone="1" if mode == "D\u00e9part" else "2")).status, 409)
         self.assertEqual(self.ha.calls, [])
     async def test_invalid_zone_and_uninstalled(self):
         self.assertEqual((await self.post(zone="climate.other")).status, 400)
@@ -139,18 +139,25 @@ class HeatingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RulesTests(unittest.TestCase):
+    def test_unicode_contract(self):
+        self.assertEqual(heating.TEXT["fr"][1], "Temp\u00e9rature souhait\u00e9e (\u00b0C)")
+        self.assertEqual(heating.TEXT["fr"][6], "R\u00e9glage r\u00e9serv\u00e9 \u00e0 un s\u00e9jour en mode Arriv\u00e9e")
+        self.assertEqual(heating.TEXT["es"][7], "Pr\u00f3ximamente")
+        self.assertNotIn(chr(65533), "".join("".join(values) for values in heating.TEXT.values()))
+        self.assertIn("\\u2212", heating.SCRIPT)
+
     def test_season_madrid_boundaries(self):
         for date, expected in [('2026-09-30T21:59:59+00:00', False),
             ('2026-09-30T22:00:00+00:00', True), ('2027-04-30T21:59:59+00:00', True),
             ('2027-04-30T22:00:00+00:00', False), ('2027-01-01T00:00:00+00:00', True)]:
             self.assertEqual(heating.winter(datetime.fromisoformat(date)), expected)
     def test_metadata_and_values(self):
-        meta = heating.thermostat(STATE, '�C')
+        meta = heating.thermostat(STATE, '\u00b0C')
         self.assertTrue(heating.valid_target('21.5', meta))
         for v in (None, True, 'nan', 'inf', '21.2', 36):
             self.assertFalse(heating.valid_target(v, meta))
-        self.assertIsNone(heating.thermostat(STATE, '�F'))
-        self.assertIsNone(heating.thermostat({'attributes': None}, '�C'))
+        self.assertIsNone(heating.thermostat(STATE, '\u00b0F'))
+        self.assertIsNone(heating.thermostat({'attributes': None}, '\u00b0C'))
 
 
 class PortalTests(unittest.IsolatedAsyncioTestCase):

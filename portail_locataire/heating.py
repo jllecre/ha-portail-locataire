@@ -10,10 +10,10 @@ from aiohttp import ClientError, ClientTimeout, web
 
 MADRID = ZoneInfo("Europe/Madrid")
 TEXT = {
-    "fr": ["Chauffage au sol", "Temp�rature souhait�e (�C)", "Appliquer", "Demande transmise. V�rification en cours.", "R�glage indisponible", "Disponible du 1er octobre au 30 avril", "R�glage r�serv� � un s�jour en mode Arriv�e", "Prochainement", "V�rifiez la temp�rature et r�essayez", "Consigne confirm�e", "Envoi en cours."],
-    "en": ["Underfloor heating", "Desired temperature (�C)", "Apply", "Request sent. Checking.", "Control unavailable", "Available from 1 October to 30 April", "Control available when the stay is in Arrival mode", "Coming soon", "Check the temperature and try again", "Target confirmed", "Sending."],
-    "nl": ["Vloerverwarming", "Gewenste temperatuur (�C)", "Toepassen", "Verzoek verstuurd. Controleren.", "Bediening niet beschikbaar", "Beschikbaar van 1 oktober tot 30 april", "Bediening beschikbaar bij verblijfsmodus Aankomst", "Binnenkort", "Controleer de temperatuur en probeer opnieuw", "Doeltemperatuur bevestigd", "Versturen."],
-    "es": ["Suelo radiante", "Temperatura deseada (�C)", "Aplicar", "Solicitud enviada. Comprobando.", "Control no disponible", "Disponible del 1 de octubre al 30 de abril", "Control disponible con la estancia en modo Llegada", "Pr�ximamente", "Compruebe la temperatura e int�ntelo de nuevo", "Temperatura objetivo confirmada", "Enviando."],
+    "fr": ["Chauffage au sol", "Temp\u00e9rature souhait\u00e9e (\u00b0C)", "Appliquer", "Demande transmise. V\u00e9rification en cours\u2026", "R\u00e9glage indisponible", "Disponible du 1er octobre au 30 avril", "R\u00e9glage r\u00e9serv\u00e9 \u00e0 un s\u00e9jour en mode Arriv\u00e9e", "Prochainement", "V\u00e9rifiez la temp\u00e9rature et r\u00e9essayez", "Consigne confirm\u00e9e", "Envoi en cours\u2026"],
+    "en": ["Underfloor heating", "Desired temperature (\u00b0C)", "Apply", "Request sent. Checking\u2026", "Control unavailable", "Available from 1 October to 30 April", "Control available when the stay is in Arrival mode", "Coming soon", "Check the temperature and try again", "Target confirmed", "Sending\u2026"],
+    "nl": ["Vloerverwarming", "Gewenste temperatuur (\u00b0C)", "Toepassen", "Verzoek verstuurd. Controleren\u2026", "Bediening niet beschikbaar", "Beschikbaar van 1 oktober tot 30 april", "Bediening beschikbaar bij verblijfsmodus Aankomst", "Binnenkort", "Controleer de temperatuur en probeer opnieuw", "Doeltemperatuur bevestigd", "Versturen\u2026"],
+    "es": ["Suelo radiante", "Temperatura deseada (\u00b0C)", "Aplicar", "Solicitud enviada. Comprobando\u2026", "Control no disponible", "Disponible del 1 de octubre al 30 de abril", "Control disponible con la estancia en modo Llegada", "Pr\u00f3ximamente", "Compruebe la temperatura e int\u00e9ntelo de nuevo", "Temperatura objetivo confirmada", "Enviando\u2026"],
 }
 
 
@@ -40,11 +40,11 @@ def thermostat(state, unit):
                                ("temperature", "min_temp", "max_temp", "target_temp_step")]
     features = attrs.get("supported_features", 0)
     if (state.get("state") in (None, "unavailable", "off", "cool", "heat_cool")
-            or unit != "�C" or None in (target, low, high)
+            or unit != "\u00b0C" or None in (target, low, high)
             or not isinstance(features, int) or not features & 1
             or not low <= target <= high):
         return None
-    # Home Assistant's single-target climate control defaults to 0.5 �C.
+    # Home Assistant's single-target climate control defaults to 0.5 \u00b0C.
     step = step if step is not None else 0.5
     if not 0 < step <= high - low:
         return None
@@ -98,7 +98,7 @@ def register(app, get_session, valid_csrf, language):
         unit = units.get("temperature") if isinstance(units, dict) else None
         iterator = iter(states)
         zones = [thermostat(next(iterator), unit) if entity else None for entity in entities]
-        return {"reason": None if rental.get("state") == "Arriv�e" else 6,
+        return {"reason": None if rental.get("state") == "Arriv\u00e9e" else 6,
                 "zones": zones}
 
     async def status(request):
@@ -198,13 +198,13 @@ SCRIPT = r"""'use strict';
     const input = document.createElement('input'), button = document.createElement('button');
     const output = document.createElement('output'); output.setAttribute('aria-live', 'polite');
     output.textContent = message;
-    label.textContent = t[0] + ' � ' + t[1]; input.id = 'target-zone-' + (i + 1); label.htmlFor = input.id;
+    label.textContent = t[0] + ' \u00b7 ' + t[1]; input.id = 'target-zone-' + (i + 1); label.htmlFor = input.id;
     input.type = 'number'; input.min = z.min; input.max = z.max; input.step = z.step;
     input.value = z.target; input.required = true; button.textContent = t[2]; button.type = 'submit';
     input.addEventListener('input', () => {host.dataset.dirty = 'true';});
     const row = document.createElement('div'); row.style.display = 'flex'; row.style.gap = '6px';
     input.style.minWidth = '0'; input.style.width = '100%';
-    for (const [symbol, operation] of [['-', 'stepDown'], ['+', 'stepUp']]) {
+    for (const [symbol, operation] of [['\u2212', 'stepDown'], ['+', 'stepUp']]) {
      const adjust = document.createElement('button'); adjust.type = 'button'; adjust.textContent = symbol;
      adjust.style.minWidth = '44px'; adjust.style.minHeight = '44px';
      adjust.setAttribute('aria-label', t[1] + ' ' + symbol);

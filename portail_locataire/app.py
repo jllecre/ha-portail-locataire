@@ -1427,7 +1427,7 @@ async def admin_home(request):
 
     return page(
         "Administration",
-        "<p>Le portail 0.7.0 est démarré.</p>"
+        "<p>Le portail 0.7.1 est démarré.</p>"
         "<p>Cette page ne connecte pas le locataire.</p>"
         "<p>Ouvrez directement l’adresse HTTPS configurée "
         "pour tester la connexion locataire.</p>"
@@ -1532,7 +1532,7 @@ async def main():
         watcher = asyncio.create_task(watch_certificate(tls))
 
         print(
-            "Portail 0.7.0 démarré : "
+            "Portail 0.7.1 démarré : "
             "Ingress 8099, HTTPS 8443, guide de séjour.",
             flush=True,
         )
