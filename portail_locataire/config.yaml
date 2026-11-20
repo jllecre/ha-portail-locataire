@@ -1,6 +1,6 @@
 name: Portail locataire
-description: Portail HTTPS sécurisé avec puissance et énergie en lecture seule
-version: "0.6.7"
+description: Guide de séjour et consignes de chauffage au sol saisonnières
+version: "0.7.0"
 slug: portail_locataire
 
 arch:
@@ -45,6 +45,9 @@ options:
   zone3_entity: climate.termostatoz3
   zone4_entity: climate.termostatoz4
 
+  floor_heating_enabled: false
+  zone5_entity: ""
+
   daily_energy_entity: sensor.shelly_shelly_em_5e1505_2_consommation_shelly_journaliere
   stay_energy_entity: sensor.shelly_shelly_em_5e1505_2_conso_sejour_locataire_hinojo45
   stay_calendar_entity: calendar.location_hinojo45
@@ -65,6 +68,8 @@ schema:
   zone2_entity: str
   zone3_entity: str
   zone4_entity: str
+  floor_heating_enabled: bool
+  zone5_entity: str
   daily_energy_entity: str
   stay_energy_entity: str
   stay_calendar_entity: str

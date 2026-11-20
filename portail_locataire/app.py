@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
+from heating import register as register_heating
 
 
 INGRESS_IP = "172.30.32.2"
@@ -151,6 +152,13 @@ def load_settings():
     ):
         raise ValueError("Les entités de zone doivent être des identifiants climate valides.")
 
+    zone5_entity = options.get("zone5_entity", "")
+    if not isinstance(zone5_entity, str) or (zone5_entity and not re.fullmatch(r"climate\.[a-z0-9_]+", zone5_entity)):
+        raise ValueError("zone5_entity doit être vide ou un identifiant climate valide.")
+    floor_heating_enabled = options.get("floor_heating_enabled", False)
+    if not isinstance(floor_heating_enabled, bool):
+        raise ValueError("floor_heating_enabled doit être un booléen.")
+
     stay_sources = {
         "daily_energy_entity": options.get("daily_energy_entity", "sensor.shelly_shelly_em_5e1505_2_consommation_shelly_journaliere"),
         "stay_energy_entity": options.get("stay_energy_entity", "sensor.shelly_shelly_em_5e1505_2_conso_sejour_locataire_hinojo45"),
@@ -173,6 +181,8 @@ def load_settings():
         "contact_phone": phone,
         "guest_name": guest_name,
         "zone_entities": zone_entities,
+        "zone5_entity": zone5_entity,
+        "floor_heating_enabled": floor_heating_enabled,
         "stay_sources": stay_sources,
         "address": address,
         "origin": origin,
@@ -930,9 +940,11 @@ WELCOME_SCRIPT = "const clock = document.querySelector(\"#welcome-time\");\ncons
 async def read_zone_temperatures(request):
     token = os.environ.get("SUPERVISOR_TOKEN")
     if not token:
-        return [None] * 4
+        return [None] * 5
 
     async def read_json(path):
+        if path is None:
+            return {}
         try:
             async with request.app["ha_client"].get(
                 "http://supervisor/core/api/" + path,
@@ -948,7 +960,8 @@ async def read_zone_temperatures(request):
             return {}
 
     paths = ["config"] + [
-        "states/" + entity for entity in request.app["settings"]["zone_entities"]
+        "states/" + entity if entity else None
+        for entity in request.app["settings"]["zone_entities"] + [request.app["settings"]["zone5_entity"]]
     ]
     config, *states = await asyncio.gather(*(read_json(path) for path in paths))
     units = config.get("unit_system", {})
@@ -996,7 +1009,7 @@ async def zones_script(request):
     return web.Response(text=ZONES_SCRIPT, content_type="text/javascript")
 
 
-ZONES_SCRIPT = "const container = document.querySelector(\"#zones\");\nconst cards = Array.from(container.querySelectorAll(\"[data-zone-value]\"));\nconst formatter = new Intl.NumberFormat(document.documentElement.lang, {\n    minimumFractionDigits: 1, maximumFractionDigits: 1\n});\nlet loading = false;\nfunction render(values) {\n    cards.forEach((card, index) => {\n        const value = values[index];\n        card.textContent = typeof value === \"number\" && Number.isFinite(value)\n            ? formatter.format(value) + \" °C\" : container.dataset.unavailable;\n    });\n}\nasync function refreshZones() {\n    if (loading || document.hidden) return;\n    loading = true;\n    try {\n        const response = await fetch(\"/api/zones\", {cache: \"no-store\", credentials: \"same-origin\"});\n        if (response.status === 401 || response.status === 403) {\n            render([]);\n            window.location.replace(\"/\");\n            return;\n        }\n        if (!response.ok) throw new Error(\"Zones unavailable\");\n        const data = await response.json();\n        if (!Array.isArray(data.temperatures_c)) throw new Error(\"Invalid zones\");\n        render(data.temperatures_c);\n    } catch {\n        render([]);\n    } finally {\n        loading = false;\n    }\n}\nsetInterval(refreshZones, 60000);\ndocument.addEventListener(\"visibilitychange\", () => {\n    if (!document.hidden) refreshZones();\n});\n"
+ZONES_SCRIPT = "const container = document.querySelector(\"#zones\");\nconst cards = Array.from(container.querySelectorAll(\"[data-zone-value]\"));\nconst formatter = new Intl.NumberFormat(document.documentElement.lang, {\n    minimumFractionDigits: 1, maximumFractionDigits: 1\n});\nlet loading = false;\nfunction render(values) {\n    cards.forEach((card, index) => {\n        const value = values[index];\n        card.textContent = typeof value === \"number\" && Number.isFinite(value)\n            ? formatter.format(value) + \" °C\" : (card.dataset.soon || container.dataset.unavailable);\n    });\n}\nasync function refreshZones() {\n    if (loading || document.hidden) return;\n    loading = true;\n    try {\n        const response = await fetch(\"/api/zones\", {cache: \"no-store\", credentials: \"same-origin\"});\n        if (response.status === 401 || response.status === 403) {\n            render([]);\n            window.location.replace(\"/\");\n            return;\n        }\n        if (!response.ok) throw new Error(\"Zones unavailable\");\n        const data = await response.json();\n        if (!Array.isArray(data.temperatures_c)) throw new Error(\"Invalid zones\");\n        render(data.temperatures_c);\n    } catch {\n        render([]);\n    } finally {\n        loading = false;\n    }\n}\nsetInterval(refreshZones, 60000);\ndocument.addEventListener(\"visibilitychange\", () => {\n    if (!document.hidden) refreshZones();\n});\n"
 
 
 def energy_kwh(data):
@@ -1175,17 +1188,13 @@ async def home(request):
         csrf = html.escape(item["csrf"], quote=True)
         zone_cards = []
         for number, value in enumerate(temperatures, start=1):
-            text = t["unavailable"] if value is None else f"{value:.1f} °C"
+            text = (t["soon"] if number == 5 and not settings["zone5_entity"] else t["unavailable"]) if value is None else f"{value:.1f} °C"
             if value is not None and lang != "en":
                 text = text.replace(".", ",")
             zone_cards.append(
                 f'<article class="zone-card"><h3>{t["zone"]} Z{number}</h3>'
-                f'<p class="temperature" data-zone-value>{text}</p></article>'
+                f'<p class="temperature" data-zone-value data-soon="{t["soon"] if number == 5 and not settings["zone5_entity"] else ""}">{text}</p></article>'
             )
-        zone_cards.append(
-            f'<article class="zone-card"><h3>{t["zone"]} Z5</h3>'
-            f'<p>{t["soon"]}</p></article>'
-        )
         zones_html = "".join(zone_cards)
         door_code = html.escape(settings["door_code"])
         door = (
@@ -1216,6 +1225,7 @@ async def home(request):
               <div class="zones-grid">{zones_html}</div>
             </section>
             <script src="/zones.js" defer></script>
+            <script src="/heating.js" defer></script>
             {favorites_section(lang)}
             {contact}
             {energy_section(energy, lang)}
@@ -1417,7 +1427,7 @@ async def admin_home(request):
 
     return page(
         "Administration",
-        "<p>Le portail 0.6.7 est démarré.</p>"
+        "<p>Le portail 0.7.0 est démarré.</p>"
         "<p>Cette page ne connecte pas le locataire.</p>"
         "<p>Ouvrez directement l’adresse HTTPS configurée "
         "pour tester la connexion locataire.</p>"
@@ -1470,7 +1480,7 @@ async def main():
     public["energy_lock"] = asyncio.Lock()
     public["energy_cache"] = {"data": {}, "refresh_at": 0}
     public["zones_lock"] = asyncio.Lock()
-    public["zones_cache"] = {"values": [None] * 4, "refresh_at": 0}
+    public["zones_cache"] = {"values": [None] * 5, "refresh_at": 0}
     public["outdoor_lock"] = asyncio.Lock()
     public["outdoor_cache"] = {"value": None, "refresh_at": 0}
     public.cleanup_ctx.append(ha_client_context)
@@ -1489,6 +1499,8 @@ async def main():
     public.router.add_post("/logout", logout)
     public.router.add_get("/api/session", session_status)
     public.router.add_get("/api/consumption", consumption_api)
+
+    register_heating(public, get_session, valid_csrf, language)
 
     admin = web.Application(client_max_size=4096)
     admin["public"] = False
@@ -1520,7 +1532,7 @@ async def main():
         watcher = asyncio.create_task(watch_certificate(tls))
 
         print(
-            "Portail 0.6.7 démarré : "
+            "Portail 0.7.0 démarré : "
             "Ingress 8099, HTTPS 8443, guide de séjour.",
             flush=True,
         )
